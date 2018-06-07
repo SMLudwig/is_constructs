@@ -7,7 +7,6 @@ from sklearn.metrics import roc_auc_score
 import numpy as np
 import pandas as pd
 import csv
-import ast
 import matplotlib.pyplot as plt
 
 # Load data
@@ -23,9 +22,7 @@ vectorizer = CountVectorizer(min_df=1, stop_words='english', lowercase=True, dty
 dt_matrix = vectorizer.fit_transform(item_corpus)
 dt_matrix = dt_matrix.toarray()
 feature_names = vectorizer.get_feature_names()
-print("Term-document count matrix prepared.")
-
-
+print("Document_term count matrix prepared (items x words).")
 # print(pd.DataFrame(dt_matrix, index=item_corpus, columns=vectorizer.get_feature_names()).head(5))
 
 # TODO: doc-strings for all functions
@@ -69,12 +66,11 @@ def item_vectors_svd(dt_matrix):
 
 
 def item_vectors_glove(dt_matrix):
-    # TODO: takes forever, try to vectorize and do dynamic programming with frequent (at all used) words
-    # TODO: deal with out of vocabulary words
+    # TODO: takes some time, could try to vectorize
+    # TODO: deal with out of vocabulary words better
     # TODO: <string>:3: UserWarning: DataFrame columns are not unique, some columns will be omitted.
     # Translate items into GloVe vector space by summing GloVe vectors of words in the item multiplied with their
     # frequency and dividing by the total number of words in the item. -> frequency weighted average vectors
-    # Takes hours!
     try:
         item_vectors = np.loadtxt('item_vectors_GloVe.txt')
     except FileNotFoundError:
@@ -92,20 +88,21 @@ def item_vectors_glove(dt_matrix):
                 ctr_oov += 1
         print(ctr_oov, "out of vocabulary words.")
 
+        # Translate items into GloVe vectors
         item_vectors = np.zeros([len(item_corpus), 50])
         for row_ind in range(len(dt_matrix)):
-            out_of_vocabulary = 0
+            ctr_oov_occurrences = 0
             for col_ind in range(len(dt_matrix[0])):
                 if np.nonzero(dt_matrix[row_ind, col_ind]):
                     try:
                         item_vectors[row_ind] = np.add(item_vectors[row_ind],
-                                                       glove_vectors[feature_names[col_ind]]
+                                                       np.asarray(glove_vectors[feature_names[col_ind]])
                                                        * dt_matrix[row_ind, col_ind])
                     except KeyError:
-                        pass
-            item_vectors[row_ind] = item_vectors[row_ind] / (np.sum(dt_matrix[row_ind] - out_of_vocabulary))
-            print("Translating items into GloVe vector space.", row_ind + 1, "of", len(dt_matrix), end="\r")
-            print("Out of vocabulary words =", out_of_vocabulary)
+                        ctr_oov_occurrences += dt_matrix[row_ind, col_ind]
+            item_vectors[row_ind] = item_vectors[row_ind] / (np.sum(dt_matrix[row_ind] - ctr_oov_occurrences))
+            print("Translating items into GloVe vectors.", row_ind + 1, "of", len(dt_matrix), end="\r")
+        item_vectors = np.nan_to_num(item_vectors)
         np.savetxt('item_vectors_GloVe.txt', item_vectors)
     print("Items translated into GloVe vectors.")
     return item_vectors
@@ -124,6 +121,7 @@ def compute_construct_similarity(item_vectors):
     # TODO: slight mismatch in number of non-zero elements to expectation... see notes
     print("Aggregating item similarity to construct similarity. This will take some time.")
     construct_similarity = np.zeros([len(variableIDs), len(variableIDs)])
+    # n_fields = (len(construct_similarity)**2 - len(construct_similarity)) / 2   # n fields in upper triu for print
     for ind_1 in range(len(variableIDs) - 1):  # rows
         for ind_2 in range(ind_1 + 1, len(variableIDs)):  # columns
             item_indices_1 = np.where(gold_items['VariableId'] == variableIDs[ind_1])[0]
@@ -134,9 +132,7 @@ def compute_construct_similarity(item_vectors):
             construct_similarity[ind_1, ind_2] = sim_avg
         # TODO: turn counter into properly weighted percentage
         print("Aggregating construct similarity.", ind_1 + 1, "of", len(variableIDs), end="\r")
-    # construct_similarity = construct_similarity + np.triu(construct_similarity, 1).T  # mirror diagonally
-    np.savetxt('construct_similarity_LSA.txt', construct_similarity)
-    construct_similarity = pd.DataFrame(construct_similarity, index=variableIDs, columns=variableIDs)
+        # print("Aggregating construct similarity.",  / n_fields, "%")
     print("Created construct similarity matrix.")
     return construct_similarity
 
@@ -161,16 +157,26 @@ def evaluate(construct_similarity):
     return fpr, tpr, roc_auc
 
 
+# Load or compute construct similarity matrix for LSA
+# TODO: produces some NaN entries in item_vectors
 try:
-    construct_similarity_LSA = np.loadtxt('construct_similarity_LSA.txt')
+    construct_similarity_LSA = np.nan_to_num(np.loadtxt('construct_similarity_LSA.txt'))
 except FileNotFoundError:
-    construct_similarity_LSA = compute_construct_similarity(item_vectors_svd(dt_matrix))
+    construct_similarity_LSA = np.nan_to_num(compute_construct_similarity(item_vectors_svd(dt_matrix)))
+    np.savetxt('construct_similarity_LSA.txt', construct_similarity_LSA)
 
+# Load or compute construct similarity matrix for GloVe
+# TODO: produces some NaN entries in item_vectors
 try:
-    construct_similarity_GloVe = np.loadtxt('construct_similarity_GloVe.txt')
+    construct_similarity_GloVe = np.nan_to_num(np.loadtxt('construct_similarity_GloVe.txt'))
 except FileNotFoundError:
-    construct_similarity_GloVe = compute_construct_similarity(item_vectors_glove(dt_matrix))
+    construct_similarity_GloVe = np.nan_to_num(compute_construct_similarity(item_vectors_glove(dt_matrix)))
+    np.savetxt('construct_similarity_GloVe.txt', construct_similarity_GloVe)
 
+# construct_similarity_LSA = pd.DataFrame(construct_similarity_LSA, index=variableIDs, columns=variableIDs)
+# construct_similarity_GloVe = pd.DataFrame(construct_similarity_GloVe, index=variableIDs, columns=variableIDs)
+
+# Evaluate models
 fpr_lsa, tpr_lsa, roc_auc_lsa = evaluate(construct_similarity_LSA)
 fpr_glove, tpr_glove, roc_auc_glove = evaluate(construct_similarity_GloVe)
 print("ROC AUC LSA =", roc_auc_lsa)
