@@ -10,37 +10,38 @@ import pandas as pd
 import csv
 import matplotlib.pyplot as plt
 
-# Load data
+# Load data.
 file = r'LarsenBong2016GoldStandard.xls'
 gold_items = pd.read_excel(file, sheet_name='Items')
 gold_standard = pd.read_excel(file, sheet_name='GoldStandard')
 variableIDs = sorted(list(set(gold_items['VariableId'])))
 item_corpus = np.asarray(gold_items['Text'])
 
-# Prepare document-term matrices
+# Prepare document-term matrices.
 # TODO: stem words (?)
 count_vectorizer = CountVectorizer(stop_words='english', lowercase=True, dtype='int32')
 dt_matrix = count_vectorizer.fit_transform(item_corpus)
 dt_matrix = dt_matrix.toarray()
+dt_matrix_l2 = Normalizer(copy=True, norm='l2').fit_transform(dt_matrix)
 tfidf_vectorizer = TfidfVectorizer(stop_words='english', lowercase=True, norm='l2', use_idf=True, smooth_idf=True)
-dt_matrix_tfidf = tfidf_vectorizer.fit_transform(item_corpus)
-dt_matrix_tfidf = dt_matrix_tfidf.toarray()
+dt_matrix_tfidf_l2 = tfidf_vectorizer.fit_transform(item_corpus)
+dt_matrix_tfidf_l2 = dt_matrix_tfidf_l2.toarray()
 feature_names = count_vectorizer.get_feature_names()
-print("Document_term matrices prepared (items x terms).")
+print("Document-term matrices prepared (items x terms).")
 # print(pd.DataFrame(dt_matrix, index=item_corpus, columns=count_vectorizer.get_feature_names()).head(5))
 
-# Apply log entropy and L2 normalization to count matrix
+# Apply log entropy and L2 normalization to count matrix.
 # https://radimrehurek.com/gensim/models/logentropy_model.html
-# log entropy implementation checked manually
+# Implementation checked manually.
 local_weight_matrix = np.log(dt_matrix + 1)
 p_matrix = np.divide(dt_matrix, np.tile(np.sum(dt_matrix, axis=0), (len(dt_matrix), 1)))
-log_matrix = np.log(p_matrix)
-log_matrix[np.isneginf(log_matrix)] = 0
-global_weight_matrix = np.tile(1 + np.divide(np.sum(np.multiply(p_matrix, log_matrix),
+log_p_matrix = np.log(p_matrix)
+log_p_matrix[np.isneginf(log_p_matrix)] = 0
+global_weight_matrix = np.tile(1 + np.divide(np.sum(np.multiply(p_matrix, log_p_matrix),
                                                     axis=0), np.log(len(dt_matrix) + 1)), (len(dt_matrix), 1))
 final_weight_matrix = np.multiply(local_weight_matrix, global_weight_matrix)
 dt_matrix_log = np.multiply(dt_matrix, final_weight_matrix)
-dt_matrix_log_l2 = Normalizer(copy=True).fit_transform(dt_matrix_log)
+dt_matrix_log_l2 = Normalizer(copy=True, norm='l2').fit_transform(dt_matrix_log)
 print("Document-term count matrix normalized with log entropy and L2 norm.")
 
 
@@ -70,45 +71,55 @@ def item_vectors_svd(dt_matrix):
     return item_vectors
 
 
-def item_vectors_glove(dt_matrix, vector_file='glove.6B/glove.6B.300d.txt'):
+def item_vectors_glove(dt_matrix, sub_dict_file, full_dict_file=None):
     """Translate items into pre-trained GloVe vector space and returns the matrix of item vectors. Sums term
-    vectors of terms in item with passed document-term matrix as weighting factor."""
-    # TODO: takes some time, could try to vectorize
+    vectors of terms in item with passed document-term matrix as weighting factor. Pass file of relevant dictionary
+    or pass dict_file=None and pass the file of the full vector dictionary to create the sub-dictionary."""
     # TODO: deal with out of vocabulary words better
-    # TODO: <string>:3: UserWarning: DataFrame columns are not unique, some columns will be omitted.
-    try:
-        item_vectors = np.loadtxt('item_vectors_GloVe.txt')
-    except FileNotFoundError:
-        print("Translating items into GloVe vectors. This will take some time.")
-        # Load pre-trained GloVe vectors and use only relevant vectors
-        with open(vector_file, 'r') as file:
+    # Implementation of dict checked.
+    if sub_dict_file is not None:
+        glove_vector_dict = np.load(sub_dict_file).item()
+    elif full_dict_file is not None:
+        # Load full pre-trained GloVe vector dictionary and extract relevant term vectors.
+        with open(full_dict_file, 'r') as file:
             glove_vectors_full = pd.read_table(file, sep=' ', index_col=0, header=None, quoting=csv.QUOTE_NONE)
+        # UserWarning: DataFrame columns are not unique, some columns will be omitted. This is caused by two
+        # duplicate NaN indices and reduces the vocabulary to 399998 words.
         glove_vectors_full = glove_vectors_full.transpose().to_dict(orient='list')
-        glove_vectors = {}
+        glove_vector_dict = {}
         ctr_oov = 0
+        ctr = 0
         for word in feature_names:
             try:
-                glove_vectors[word] = glove_vectors_full[word]
+                glove_vector_dict[word] = glove_vectors_full[word]
             except KeyError:
                 ctr_oov += 1
+            ctr += 1
+            print("Creating GloVe vector dictionary of relevant terms.", ctr / len(feature_names) * 100, "%",
+                  end="\r")
         print(ctr_oov, "out of vocabulary words.")
+        np.save('GloVe_vector_dict.npy', glove_vector_dict)
+    else:
+        raise FileNotFoundError
 
-        # Translate items into GloVe vectors
-        item_vectors = np.zeros([len(item_corpus), len(next(iter(glove_vectors.values())))])
-        for row_ind in range(len(dt_matrix)):
-            ctr_oov_occurrences = 0
-            for col_ind in range(len(dt_matrix[0])):
-                if np.nonzero(dt_matrix[row_ind, col_ind]):
-                    try:
-                        item_vectors[row_ind] = np.add(item_vectors[row_ind],
-                                                       np.asarray(glove_vectors[feature_names[col_ind]])
-                                                       * dt_matrix[row_ind, col_ind])
-                    except KeyError:
-                        ctr_oov_occurrences += dt_matrix[row_ind, col_ind]
-            # item_vectors[row_ind] = item_vectors[row_ind] / (np.sum(dt_matrix[row_ind]) - ctr_oov_occurrences)
-            print("Translating items into GloVe vectors.", ((row_ind + 1) / len(dt_matrix)) * 100, "%", end="\r")
-        item_vectors = np.nan_to_num(item_vectors)
-        np.savetxt('item_vectors_GloVe.txt', item_vectors)
+    # Translate items into GloVe vectors.
+    # Implementation checked manually, but there are multiple ways of doing this.
+    item_vectors = np.zeros([len(dt_matrix), len(next(iter(glove_vector_dict.values())))])
+    for row_ind in range(len(dt_matrix)):
+        ctr_oov_occurrences = 0
+        for col_ind in range(len(dt_matrix[0])):
+            if np.nonzero(dt_matrix[row_ind, col_ind]):
+                try:
+                    item_vectors[row_ind] = np.add(item_vectors[row_ind],
+                                                   np.asarray(glove_vector_dict[feature_names[col_ind]])
+                                                   * dt_matrix[row_ind, col_ind])
+                except KeyError:
+                    ctr_oov_occurrences += dt_matrix[row_ind, col_ind]
+        # The following line could be used to average if the passed dt_matrix is not normed, but it produces some
+        # NaN entries.
+        # item_vectors[row_ind] = item_vectors[row_ind] / (np.sum(dt_matrix[row_ind]) - ctr_oov_occurrences)
+        if row_ind % 100 == 0:
+            print("Translating items into GloVe vectors.", (row_ind + 1) / len(dt_matrix) * 100, "%", end="\r")
     return item_vectors
 
 
@@ -118,8 +129,8 @@ def compute_construct_similarity(item_vectors):
     established by Larsen and Bong 2016. Creates upper triangular with zero diagonal for efficiency."""
     # Compute cosine similarity of items in the vector space
     item_similarity = np.asarray(np.asmatrix(item_vectors) * np.asmatrix(item_vectors).T)
-    print("Cosine similarity of items computed.")
-    print("Number unique item pairs =", np.count_nonzero(np.triu(item_similarity, 1)))
+    print("Cosine similarity of items computed. Number unique item pairs =",
+          np.count_nonzero(np.triu(item_similarity, 1)))
 
     # TODO: slight mismatch in number of non-zero elements to expectation... see notes
     construct_similarity = np.zeros([len(variableIDs), len(variableIDs)])
@@ -134,7 +145,8 @@ def compute_construct_similarity(item_vectors):
             sim_avg = np.average([sim_1, sim_2])
             construct_similarity[ind_1, ind_2] = sim_avg
             ctr += 1
-        print("Aggregating to construct similarity.", ctr / n_fields * 100, "%", end='\r')
+        if ind_1 % 20 == 0:
+            print("Aggregating to construct similarity.", ctr / n_fields * 100, "%", end='\r')
     return construct_similarity
 
 
@@ -163,18 +175,19 @@ def evaluate(construct_similarity):
 # Load or compute construct similarity matrix for LSA
 # TODO: produces some NaN entries in item_vectors
 try:
-    construct_similarity_LSA = np.nan_to_num(np.loadtxt('construct_similarity_LSA.txt'))
+    construct_similarity_LSA = np.loadtxt('construct_similarity_LSA.txt')
 except FileNotFoundError:
-    construct_similarity_LSA = np.nan_to_num(compute_construct_similarity(item_vectors_svd(dt_matrix_log_l2)))
+    construct_similarity_LSA = np.nan_to_num(compute_construct_similarity(item_vectors_svd(dt_matrix_l2)))
     np.savetxt('construct_similarity_LSA.txt', construct_similarity_LSA)
 
 # Load or compute construct similarity matrix for GloVe
 # TODO: produces some NaN entries in item_vectors
 try:
-    construct_similarity_GloVe = np.nan_to_num(np.loadtxt('construct_similarity_GloVe.txt'))
+    construct_similarity_GloVe = np.loadtxt('construct_similarity_GloVe.txt')
 except FileNotFoundError:
     construct_similarity_GloVe = np.nan_to_num(compute_construct_similarity(
-        item_vectors_glove(dt_matrix_log_l2, vector_file='glove.6B/glove.6B.200d.txt')))
+        item_vectors_glove(dt_matrix, sub_dict_file='GloVe_vector_dict_6B_50d.npy',
+                           full_dict_file='glove.6B/glove.6B.50d.txt')))
     np.savetxt('construct_similarity_GloVe.txt', construct_similarity_GloVe)
 
 # construct_similarity_LSA = pd.DataFrame(construct_similarity_LSA, index=variableIDs, columns=variableIDs)
