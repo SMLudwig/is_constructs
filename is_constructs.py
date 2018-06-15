@@ -11,7 +11,7 @@ import csv
 import matplotlib.pyplot as plt
 
 
-def create_dt_matrices():
+def create_dt_matrices(item_corpus):
     """Creates and returns a dictionary of document-term matrices with different processing methods.
     Also returns the feature names (terms) extracted by the vectorizer."""
     # TODO: stem words (?)
@@ -129,7 +129,7 @@ def item_vectors_glove(dtm_identifier, sub_dict_file, denominator=None, full_dic
             'norm': item_vectors[row_ind] / (np.linalg.norm(dt_matrix[row_ind])),
             'norm_value-oov': item_vectors[row_ind] / (np.linalg.norm(dt_matrix[row_ind]) - value_oov)
         }.get(denominator, item_vectors[row_ind])
-        if row_ind % 100 == 0:
+        if row_ind % 200 == 0:
             print("Translating items into GloVe vectors.", (row_ind + 1) / len(dt_matrix) * 100, "%", end="\r")
     return item_vectors
 
@@ -191,7 +191,7 @@ variableIDs = sorted(list(set(gold_items['VariableId'])))
 item_corpus = np.asarray(gold_items['Text'])
 
 # Create document-term matrices.
-feature_names, dt_matrices = create_dt_matrices()
+feature_names, dt_matrices = create_dt_matrices(item_corpus)
 
 # Load or compute construct similarity matrix for LSA.
 # TODO: produced some NaN entries in item_vectors
@@ -214,18 +214,22 @@ except FileNotFoundError:
 
 # Search for best GloVe document projection
 denominator_options = [None, 'sum', 'sum_value-oov', 'norm', 'norm_value-oov']
-# grid = [[mat, den] for mat in dt_matrices for den in denominator_options]
-grid = [['dt_matrix', None], ['dt_matrix', 'sum']]
+grid = [[mat, den] for mat in dt_matrices for den in denominator_options]
+# grid = [['dt_matrix', None], ['dt_matrix', 'sum']]
 glove_results = []
 ctr = 0
 print("Performing grid search on GloVe.")
 for dtm_identifier, denominator in grid:
-    item_vectors_glove(dtm_identifier, denominator=denominator, sub_dict_file='GloVe_vector_dict_6B_100d.npy')
-    construct_similarity_GloVe = np.nan_to_num(compute_construct_similarity(item_vectors_glove))
+    item_vectors = item_vectors_glove(dtm_identifier, denominator=denominator,
+                                      sub_dict_file='GloVe_vector_dict_6B_100d.npy')
+    construct_similarity_GloVe = np.nan_to_num(compute_construct_similarity(item_vectors))
     fpr_glove, tpr_glove, roc_auc_glove = evaluate(construct_similarity_GloVe)
     glove_results.append([dtm_identifier, denominator, roc_auc_glove])
     ctr += 1
-    print("Grid search on GloVe.", ctr / len(grid) * 100, "%")
+    print("New GloVe search result:", dtm_identifier, denominator, roc_auc_glove)
+    print("Grid search on GloVe.", ctr / len(grid) * 100, "%\n")
+np.save('GloVe_search_results.npy', np.asarray(glove_results))
+glove_results = np.load('GloVe_search_results.npy')
 
 # construct_similarity_LSA = pd.DataFrame(construct_similarity_LSA, index=variableIDs, columns=variableIDs)
 # construct_similarity_GloVe = pd.DataFrame(construct_similarity_GloVe, index=variableIDs, columns=variableIDs)
