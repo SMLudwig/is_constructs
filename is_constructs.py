@@ -75,10 +75,10 @@ def item_vectors_svd(dtm_identifier):
     return item_vectors
 
 
-def item_vectors_glove(dtm_identifier, sub_dict_file, denominator=None, full_dict_file=None):
-    """Translate items into pre-trained GloVe vector space and returns the matrix of item vectors. Sums term
-    vectors of terms in item with passed document-term matrix as weighting factor. Pass file of relevant dictionary
-    or pass dict_file=None and pass the file of the full vector dictionary to create the sub-dictionary."""
+def load_glove_vectors(sub_dict_file, full_dict_file=None):
+    """Loads relevant GloVe vectors. Returns a dictionary and a sorted matrix of relevant GloVe vectors.
+    Pass file of relevant dictionary or pass dict_file=None and pass the file of the full vector dictionary
+    to create the sub-dictionary."""
     # TODO: deal with out of vocabulary words better
     # Implementation of dict checked.
     if sub_dict_file is not None:
@@ -97,6 +97,8 @@ def item_vectors_glove(dtm_identifier, sub_dict_file, denominator=None, full_dic
             try:
                 glove_vector_dict[word] = glove_vectors_full[word]
             except KeyError:
+                # Set vector to zero if out of vocabulary word.
+                glove_vector_dict[word] = np.zeros(len(next(iter(glove_vector_dict.values()))))
                 ctr_oov += 1
             ctr += 1
             print("Creating GloVe vector dictionary of relevant terms.", ctr / len(feature_names) * 100, "%",
@@ -106,6 +108,19 @@ def item_vectors_glove(dtm_identifier, sub_dict_file, denominator=None, full_dic
     else:
         raise FileNotFoundError
 
+    # Create term vector matrix from GloVe vector dict of relevant terms.
+    term_vectors = np.zeros([len(glove_vector_dict), len(next(iter(glove_vector_dict.values())))])
+    row_ind = 0
+    for key in sorted(glove_vector_dict.keys()):
+        term_vectors[row_ind] = glove_vector_dict[key]
+        row_ind += 1
+    return term_vectors, glove_vector_dict
+
+
+def item_vectors_glove(dtm_identifier, denominator=None):
+    """Translate items into pre-trained GloVe vector space and returns the matrix of item vectors. Sums term
+    vectors of terms in item with passed document-term matrix as weighting factor and divides vector according
+    to passed denominator mode."""
     # Translate items into GloVe vectors.
     # Implementation checked manually, but there are multiple ways of doing this.
     dt_matrix = dt_matrices[dtm_identifier]
@@ -129,19 +144,63 @@ def item_vectors_glove(dtm_identifier, sub_dict_file, denominator=None, full_dic
             'norm': item_vectors[row_ind] / (np.linalg.norm(dt_matrix[row_ind])),
             'norm_value-oov': item_vectors[row_ind] / (np.linalg.norm(dt_matrix[row_ind]) - value_oov)
         }.get(denominator, item_vectors[row_ind])
-        if row_ind % 200 == 0:
+        if row_ind % 250 == 0:
             print("Translating items into GloVe vectors.", (row_ind + 1) / len(dt_matrix) * 100, "%", end="\r")
     return item_vectors
 
 
-def compute_construct_similarity(item_vectors):
+def aggregate_item_similarity_glove(dtm_identifier, term_vectors):
+    # TODO: implementation is completely agnostic to dt_matrix processing, e.g. normalizing -> try weighted avg
+    # Compute cosine term similarity as matrix.
+    term_similarity = np.asarray(np.asmatrix(term_vectors) * np.asmatrix(term_vectors).T)
+    assert np.shape(term_similarity) == (len(feature_names), len(feature_names)), "mismatch in number of terms."
+    print("Cosine similarity of terms computed. Number unique term pairs =",
+          np.count_nonzero(np.triu(term_similarity, 1)))
+
+    # Aggregate item similarity from term similarities.
+    item_similarity = np.zeros([len(dt_matrices[dtm_identifier]), len(dt_matrices[dtm_identifier])])
+    n_fields = (len(item_similarity) ** 2 - len(item_similarity)) / 2  # n fields in upper triu for print
+    ctr = 0  # counter for print
+    ctr_one = 0  # counter for item-relationships with only one non-zero term similarity
+    ctr_none = 0  # counter for item-relationships with no non-zero term similarity
+    for ind_1 in range(len(dt_matrices[dtm_identifier]) - 1):  # rows
+        for ind_2 in range(ind_1 + 1, len(dt_matrices[dtm_identifier])):  # columns
+            # Get term indices of the terms in the first and second item.
+            term_indices_1 = np.where(dt_matrices[dtm_identifier][ind_1] != 0)[0]
+            term_indices_2 = np.where(dt_matrices[dtm_identifier][ind_2] != 0)[0]
+            # Get sub-matrix containing the similarities of relevant terms.
+            term_sim_sub = term_similarity[np.ix_(term_indices_1, term_indices_2)]
+            try:  # Deals with zero vectors caused by out of vocabulary words.
+                sim_2, sim_1 = np.sort(term_sim_sub, axis=None)[-2:]
+                sim_avg = np.average([sim_1, sim_2])
+            except ValueError:
+                if np.count_nonzero(term_sim_sub) != 0:
+                    sim_avg = np.sort(term_sim_sub, axis=None)[-1]
+                    ctr_one += 1
+                else:
+                    sim_avg = 0
+                    ctr_none += 1
+            item_similarity[ind_1, ind_2] = sim_avg
+            ctr += 1
+        if ind_1 % 40 == 0:
+            print("Aggregating GloVe term to item similarity.", ctr / n_fields * 100, "%", end='\r')
+    print("Number of item-relationships with only one non-zero term similarity:", ctr_one)
+    print("Number of item-relationships with no non-zero term similarity:", ctr_none)
+    # Mirror lower triangular and fill diagonal of the matrix.
+    item_similarity = np.add(item_similarity, item_similarity.T)
+    # item_similarity = np.fill_diagonal(item_similarity, 1)
+    return item_similarity
+
+
+def aggregate_construct_similarity(item_vectors, item_similarity=None):
     """Computes construct similarities from items in vector space. To aggregate item cosine similarity to construct
     similarity, the average similarity of the two most similar items between each construct pair is taken, as
     established by Larsen and Bong 2016. Creates upper triangular with zero diagonal for efficiency."""
     # Compute cosine similarity of items in the vector space
-    item_similarity = np.asarray(np.asmatrix(item_vectors) * np.asmatrix(item_vectors).T)
-    print("Cosine similarity of items computed. Number unique item pairs =",
-          np.count_nonzero(np.triu(item_similarity, 1)))
+    if item_vectors is not None:
+        item_similarity = np.asarray(np.asmatrix(item_vectors) * np.asmatrix(item_vectors).T)
+        print("Cosine similarity of items computed. Number unique item pairs =",
+              np.count_nonzero(np.triu(item_similarity, 1)))
 
     # TODO: slight mismatch in number of non-zero elements to expectation... see notes
     construct_similarity = np.zeros([len(variableIDs), len(variableIDs)])
@@ -152,12 +211,12 @@ def compute_construct_similarity(item_vectors):
             item_indices_1 = np.where(gold_items['VariableId'] == variableIDs[ind_1])[0]
             item_indices_2 = np.where(gold_items['VariableId'] == variableIDs[ind_2])[0]
             item_sim_sub = item_similarity[np.ix_(item_indices_1, item_indices_2)]
-            sim_1, sim_2 = np.sort(item_sim_sub, axis=None)[-2:]
+            sim_2, sim_1 = np.sort(item_sim_sub, axis=None)[-2:]
             sim_avg = np.average([sim_1, sim_2])
             construct_similarity[ind_1, ind_2] = sim_avg
             ctr += 1
-        if ind_1 % 20 == 0:
-            print("Aggregating to construct similarity.", ctr / n_fields * 100, "%", end='\r')
+        if ind_1 % 30 == 0:
+            print("Aggregating item to construct similarity.", ctr / n_fields * 100, "%", end='\r')
     return construct_similarity
 
 
@@ -193,43 +252,23 @@ item_corpus = np.asarray(gold_items['Text'])
 # Create document-term matrices.
 feature_names, dt_matrices = create_dt_matrices(item_corpus)
 
+# Load GloVe vector dictionary of relevant terms.
+term_vectors_glove, glove_vector_dict = load_glove_vectors(sub_dict_file='GloVe_vector_dict_6B_300d.npy',
+                                                           full_dict_file='glove.6B/glove.6B.300d.txt')
+
 # Load or compute construct similarity matrix for LSA.
-# TODO: produced some NaN entries in item_vectors
 try:
     construct_similarity_LSA = np.loadtxt('construct_similarity_LSA.txt')
 except FileNotFoundError:
-    construct_similarity_LSA = np.nan_to_num(compute_construct_similarity(
+    construct_similarity_LSA = np.nan_to_num(aggregate_construct_similarity(
         item_vectors_svd(dt_matrices['dt_matrix_tfidf_l2'])))
     np.savetxt('construct_similarity_LSA.txt', construct_similarity_LSA)
 
-# Load or compute construct similarity matrix for GloVe.
-# TODO: produced some NaN entries in item_vectors
-try:
-    construct_similarity_GloVe = np.loadtxt('construct_similarity_GloVe.txt')
-except FileNotFoundError:
-    construct_similarity_GloVe = np.nan_to_num(compute_construct_similarity(
-        item_vectors_glove(dt_matrices['dt_matrix_tfidf_l2'], sub_dict_file='GloVe_vector_dict_6B_50d.npy',
-                           full_dict_file='glove.6B/glove.6B.50d.txt')))
-    np.savetxt('construct_similarity_GloVe.txt', construct_similarity_GloVe)
-
-# Search for best GloVe document projection
-denominator_options = [None, 'sum', 'sum_value-oov', 'norm', 'norm_value-oov']
-grid = [[mat, den] for mat in dt_matrices for den in denominator_options]
-# grid = [['dt_matrix', None], ['dt_matrix', 'sum']]
-glove_results = []
-ctr = 0
-print("Performing grid search on GloVe.")
-for dtm_identifier, denominator in grid:
-    item_vectors = item_vectors_glove(dtm_identifier, denominator=denominator,
-                                      sub_dict_file='GloVe_vector_dict_6B_100d.npy')
-    construct_similarity_GloVe = np.nan_to_num(compute_construct_similarity(item_vectors))
-    fpr_glove, tpr_glove, roc_auc_glove = evaluate(construct_similarity_GloVe)
-    glove_results.append([dtm_identifier, denominator, roc_auc_glove])
-    ctr += 1
-    print("New GloVe search result:", dtm_identifier, denominator, roc_auc_glove)
-    print("Grid search on GloVe.", ctr / len(grid) * 100, "%\n")
-np.save('GloVe_search_results.npy', np.asarray(glove_results))
-glove_results = np.load('GloVe_search_results.npy')
+# Try GloVe item to term aggregation. Uses new aggregate_item_similarity_glove(...) function.
+construct_similarity_GloVe = np.nan_to_num(
+    aggregate_construct_similarity(item_vectors=None,
+                                   item_similarity=aggregate_item_similarity_glove('dt_matrix',
+                                                                                   term_vectors_glove)))
 
 # construct_similarity_LSA = pd.DataFrame(construct_similarity_LSA, index=variableIDs, columns=variableIDs)
 # construct_similarity_GloVe = pd.DataFrame(construct_similarity_GloVe, index=variableIDs, columns=variableIDs)
@@ -249,3 +288,25 @@ plt.xlabel("False Positive Rate (FPR)")
 plt.ylabel("True Positive Rate (TPR)")
 plt.legend(["LSA", "GloVe"])
 plt.show()
+
+# -----------------------------------------
+# ---------------- ARCHIVE ----------------
+
+# NOTES: Load the results from 'GloVe_search_results.npy'. Best results around 0.63.
+# Search for best GloVe document projection. Uses old item_vectors_glove(...) function.
+denominator_options = [None, 'sum', 'sum_value-oov', 'norm', 'norm_value-oov']
+grid = [[mat, den] for mat in dt_matrices for den in denominator_options]
+# grid = [['dt_matrix', None], ['dt_matrix', 'sum']]
+glove_results = []
+ctr = 0
+print("Performing grid search on GloVe.")
+for dtm_identifier, denominator in grid:
+    item_vectors = item_vectors_glove(dtm_identifier, denominator=denominator)
+    construct_similarity_GloVe = np.nan_to_num(aggregate_construct_similarity(item_vectors))
+    fpr_glove, tpr_glove, roc_auc_glove = evaluate(construct_similarity_GloVe)
+    glove_results.append([dtm_identifier, denominator, roc_auc_glove])
+    ctr += 1
+    print("New GloVe search result:", dtm_identifier, denominator, roc_auc_glove)
+    print("Grid search on GloVe.", ctr / len(grid) * 100, "%\n")
+np.save('GloVe_search_results.npy', np.asarray(glove_results))
+glove_results = np.load('GloVe_search_results.npy')
