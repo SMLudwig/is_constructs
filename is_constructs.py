@@ -67,12 +67,13 @@ def recreate_construct_identity_gold():
     return construct_identity_gold
 
 
-def item_vectors_svd(dtm_identifier):
-    """Create item vectors with SVD a.k.a. LSA."""
+def vectors_lsa(dtm_identifier):
+    """Create term and item vectors with SVD a.k.a. LSA."""
     t_svd = TruncatedSVD(n_components=300, algorithm='randomized')
     item_vectors = t_svd.fit_transform(dt_matrices[dtm_identifier])
+    term_vectors = t_svd.components_.T
     print("LSA item vectors created with SVD.")
-    return item_vectors
+    return term_vectors, item_vectors
 
 
 def load_glove_vectors(sub_dict_file, full_dict_file=None):
@@ -117,7 +118,7 @@ def load_glove_vectors(sub_dict_file, full_dict_file=None):
     return term_vectors, glove_vector_dict
 
 
-def item_vectors_glove(dtm_identifier, denominator=None):
+def items_vector_average_glove(dtm_identifier, denominator=None):
     """Translate items into pre-trained GloVe vector space and returns the matrix of item vectors. Sums term
     vectors of terms in item with passed document-term matrix as weighting factor and divides vector according
     to passed denominator mode."""
@@ -149,13 +150,22 @@ def item_vectors_glove(dtm_identifier, denominator=None):
     return item_vectors
 
 
-def aggregate_item_similarity_glove(dtm_identifier, term_vectors):
+def aggregate_item_similarity(dtm_identifier, term_vectors, n_similarities=2):
     # TODO: implementation is completely agnostic to dt_matrix processing, e.g. normalizing -> try weighted avg
+    # TODO: painfully slow.
     # Compute cosine term similarity as matrix.
     term_similarity = np.asarray(np.asmatrix(term_vectors) * np.asmatrix(term_vectors).T)
     assert np.shape(term_similarity) == (len(feature_names), len(feature_names)), "mismatch in number of terms."
     print("Cosine similarity of terms computed. Number unique term pairs =",
           np.count_nonzero(np.triu(term_similarity, 1)))
+
+    # TODO: produces the following warnings:
+    # /Users/siegfriedludwig/anaconda3/envs/is_constructs/lib/python3.6/site-packages/numpy/lib/function_base.py:1110:
+    # RuntimeWarning: Mean of empty slice.
+    #   avg = a.mean(axis)
+    # /Users/siegfriedludwig/anaconda3/envs/is_constructs/lib/python3.6/site-packages/numpy/core/_methods.py:80:
+    # RuntimeWarning: invalid value encountered in double_scalars
+    #   ret = ret.dtype.type(ret / rcount)
 
     # Aggregate item similarity from term similarities.
     item_similarity = np.zeros([len(dt_matrices[dtm_identifier]), len(dt_matrices[dtm_identifier])])
@@ -165,14 +175,17 @@ def aggregate_item_similarity_glove(dtm_identifier, term_vectors):
     ctr_none = 0  # counter for item-relationships with no non-zero term similarity
     for ind_1 in range(len(dt_matrices[dtm_identifier]) - 1):  # rows
         for ind_2 in range(ind_1 + 1, len(dt_matrices[dtm_identifier])):  # columns
-            # Get term indices of the terms in the first and second item.
+            # Implementation checked manually, excluding exception handling.
+            # Get term similarities between the items.
             term_indices_1 = np.where(dt_matrices[dtm_identifier][ind_1] != 0)[0]
             term_indices_2 = np.where(dt_matrices[dtm_identifier][ind_2] != 0)[0]
-            # Get sub-matrix containing the similarities of relevant terms.
-            term_sim_sub = term_similarity[np.ix_(term_indices_1, term_indices_2)]
+            term_indices_all = []
+            for i1 in term_indices_1:
+                term_indices_all += [(i1, i2) for i2 in term_indices_2]
+            term_sim_sub = [term_similarity[i] for i in term_indices_all]
             try:  # Deals with zero vectors caused by out of vocabulary words.
-                sim_2, sim_1 = np.sort(term_sim_sub, axis=None)[-2:]
-                sim_avg = np.average([sim_1, sim_2])
+                # Compute item similarity from average of n highest term similarities.
+                sim_avg = np.average(np.sort(term_sim_sub, axis=None)[-np.max([n_similarities, 2]):])
             except ValueError:
                 if np.count_nonzero(term_sim_sub) != 0:
                     sim_avg = np.sort(term_sim_sub, axis=None)[-1]
@@ -182,8 +195,8 @@ def aggregate_item_similarity_glove(dtm_identifier, term_vectors):
                     ctr_none += 1
             item_similarity[ind_1, ind_2] = sim_avg
             ctr += 1
-        if ind_1 % 40 == 0:
-            print("Aggregating GloVe term to item similarity.", ctr / n_fields * 100, "%", end='\r')
+        if ind_1 % 50 == 0:
+            print("Aggregating term to item similarity.", ctr / n_fields * 100, "%", end='\r')
     print("Number of item-relationships with only one non-zero term similarity:", ctr_one)
     print("Number of item-relationships with no non-zero term similarity:", ctr_none)
     # Mirror lower triangular and fill diagonal of the matrix.
@@ -192,7 +205,7 @@ def aggregate_item_similarity_glove(dtm_identifier, term_vectors):
     return item_similarity
 
 
-def aggregate_construct_similarity(item_vectors, item_similarity=None):
+def aggregate_construct_similarity(item_vectors, item_similarity=None, n_similarities=2):
     """Computes construct similarities from items in vector space. To aggregate item cosine similarity to construct
     similarity, the average similarity of the two most similar items between each construct pair is taken, as
     established by Larsen and Bong 2016. Creates upper triangular with zero diagonal for efficiency."""
@@ -208,11 +221,16 @@ def aggregate_construct_similarity(item_vectors, item_similarity=None):
     ctr = 0  # counter for print
     for ind_1 in range(len(variableIDs) - 1):  # rows
         for ind_2 in range(ind_1 + 1, len(variableIDs)):  # columns
+            # Implementation checked manually.
+            # Get item similarities between the constructs.
             item_indices_1 = np.where(gold_items['VariableId'] == variableIDs[ind_1])[0]
             item_indices_2 = np.where(gold_items['VariableId'] == variableIDs[ind_2])[0]
-            item_sim_sub = item_similarity[np.ix_(item_indices_1, item_indices_2)]
-            sim_2, sim_1 = np.sort(item_sim_sub, axis=None)[-2:]
-            sim_avg = np.average([sim_1, sim_2])
+            item_indices_all = []
+            for i1 in item_indices_1:
+                item_indices_all += [(i1, i2) for i2 in item_indices_2]
+            item_sim_sub = [item_similarity[i] for i in item_indices_all]
+            # Compute construct similarity from average of n highest item similarities.
+            sim_avg = np.average(np.sort(item_sim_sub, axis=None)[-np.max([n_similarities, 2]):])
             construct_similarity[ind_1, ind_2] = sim_avg
             ctr += 1
         if ind_1 % 30 == 0:
@@ -252,26 +270,28 @@ item_corpus = np.asarray(gold_items['Text'])
 # Create document-term matrices.
 feature_names, dt_matrices = create_dt_matrices(item_corpus)
 
-# Load GloVe vector dictionary of relevant terms.
-term_vectors_glove, glove_vector_dict = load_glove_vectors(sub_dict_file='GloVe_vector_dict_6B_300d.npy',
-                                                           full_dict_file='glove.6B/glove.6B.300d.txt')
+# Load GloVe vector dictionary of relevant terms. 'GloVe_vector_dict_6B_300d.npy'
+term_vectors_glove, glove_vector_dict = load_glove_vectors(sub_dict_file=None,
+                                                           full_dict_file='glove.42B.300d.txt')
 
-# Load or compute construct similarity matrix for LSA.
-try:
-    construct_similarity_LSA = np.loadtxt('construct_similarity_LSA.txt')
-except FileNotFoundError:
-    construct_similarity_LSA = np.nan_to_num(aggregate_construct_similarity(
-        item_vectors_svd(dt_matrices['dt_matrix_tfidf_l2'])))
-    np.savetxt('construct_similarity_LSA.txt', construct_similarity_LSA)
+# Compute construct similarity matrix for LSA
+term_vectors_lsa, item_vectors_lsa = vectors_lsa('dt_matrix_tfidf_l2')
+construct_similarity_LSA = np.nan_to_num(
+    aggregate_construct_similarity(item_vectors=None,
+                                   item_similarity=aggregate_item_similarity('dt_matrix',
+                                                                             term_vectors_lsa,
+                                                                             n_similarities=2),
+                                   n_similarities=2))
+print("Construct similarity matrix computed with LSA.")
 
-# Try GloVe item to term aggregation. Uses new aggregate_item_similarity_glove(...) function.
+# Compute construct similarity matrix for GloVe
 construct_similarity_GloVe = np.nan_to_num(
     aggregate_construct_similarity(item_vectors=None,
-                                   item_similarity=aggregate_item_similarity_glove('dt_matrix',
-                                                                                   term_vectors_glove)))
-
-# construct_similarity_LSA = pd.DataFrame(construct_similarity_LSA, index=variableIDs, columns=variableIDs)
-# construct_similarity_GloVe = pd.DataFrame(construct_similarity_GloVe, index=variableIDs, columns=variableIDs)
+                                   item_similarity=aggregate_item_similarity('dt_matrix',
+                                                                             term_vectors_glove,
+                                                                             n_similarities=2),
+                                   n_similarities=2))
+print("Construct similarity matrix computed with GloVe.")
 
 # Evaluate models
 fpr_lsa, tpr_lsa, roc_auc_lsa = evaluate(construct_similarity_LSA)
@@ -292,8 +312,13 @@ plt.show()
 # -----------------------------------------
 # ---------------- ARCHIVE ----------------
 
+# Convert similarity matrices to Pandas data frames with labelling.
+construct_similarity_LSA = pd.DataFrame(construct_similarity_LSA, index=variableIDs, columns=variableIDs)
+construct_similarity_GloVe = pd.DataFrame(construct_similarity_GloVe, index=variableIDs, columns=variableIDs)
+
 # NOTES: Load the results from 'GloVe_search_results.npy'. Best results around 0.63.
-# Search for best GloVe document projection. Uses old item_vectors_glove(...) function.
+# Parameter search for GloVe document projection by weighted item vectors.
+# Uses old item_vectors_glove(...) function.
 denominator_options = [None, 'sum', 'sum_value-oov', 'norm', 'norm_value-oov']
 grid = [[mat, den] for mat in dt_matrices for den in denominator_options]
 # grid = [['dt_matrix', None], ['dt_matrix', 'sum']]
@@ -301,7 +326,7 @@ glove_results = []
 ctr = 0
 print("Performing grid search on GloVe.")
 for dtm_identifier, denominator in grid:
-    item_vectors = item_vectors_glove(dtm_identifier, denominator=denominator)
+    item_vectors = items_vector_average_glove(dtm_identifier, denominator=denominator)
     construct_similarity_GloVe = np.nan_to_num(aggregate_construct_similarity(item_vectors))
     fpr_glove, tpr_glove, roc_auc_glove = evaluate(construct_similarity_GloVe)
     glove_results.append([dtm_identifier, denominator, roc_auc_glove])
