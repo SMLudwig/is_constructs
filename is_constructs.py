@@ -192,13 +192,14 @@ def test_tvfd():
                    'lime': [0.3, 0.6, 0.8]
                    }
     target_terms = ['it', 'technolog', 'advanc', 'situat']
-    result = term_vectors_from_dict(vector_dict, target_terms)
+    verbose = True
+    result = term_vectors_from_dict(vector_dict, target_terms, verbose=verbose)
     print(result, "\n")
     info(result)
 
 
 def train_term_vectors_lsa(dtm_train, source_terms, target_terms, n_components=300, return_doc_vectors=False,
-                           verbose=True):
+                           verbose=False):
     """Train term and item vectors with SVD a.k.a. LSA."""
     assert len(dtm_train) >= n_components, "Number of training documents has to be >= number of components."
     t_svd = TruncatedSVD(n_components=n_components, algorithm='randomized')
@@ -227,6 +228,10 @@ def train_term_vectors_lsa(dtm_train, source_terms, target_terms, n_components=3
         return term_vectors, doc_vectors
     else:
         return term_vectors
+
+
+def test_ttvlsa():
+    pass
 
 
 def load_term_vectors_glove(file_name, target_terms, reduce_dict=False, verbose=True):
