@@ -172,7 +172,7 @@ def test_rcig():
     info(result)
 
 
-def term_vectors_from_dict(vector_dict, target_terms, verbose=False):
+def term_vectors_from_dict(vector_dict, target_terms, normalize=True, verbose=False):
     """Creates term-vector matrix DataFrame of passed terms from passed vector dict."""
     # TODO: deal with OOV words better than just setting a zero vector.
     # Implementation checked 28 June.
@@ -188,6 +188,8 @@ def term_vectors_from_dict(vector_dict, target_terms, verbose=False):
         i += 1
     if verbose:
         print("Created term vectors from dictionary.", ctr_oov, "OOV words.")
+    if normalize:
+        term_vectors = Normalizer(norm='l2', copy=True).fit_transform(term_vectors)
     term_vectors = pd.DataFrame(term_vectors, index=target_terms)
     return term_vectors
 
@@ -200,8 +202,9 @@ def test_tvfd():
                    'lime': [0.3, 0.6, 0.8]
                    }
     target_terms = ['it', 'technolog', 'advanc', 'situat']
+    normalize = True
     verbose = True
-    result = term_vectors_from_dict(vector_dict, target_terms, verbose=verbose)
+    result = term_vectors_from_dict(vector_dict, target_terms, normalize=normalize, verbose=verbose)
     print(result, "\n")
     info(result)
 
