@@ -89,7 +89,7 @@ def test_pt():
 def create_dt_matrix(corpus, processing='count'):
     """Creates and returns document-term matrix DataFrame with the specified processing method.
     Also returns the feature names (terms) extracted by the vectorizer. Available processing methods are
-    'count', 'l2', 'tfidf_l2', 'log' and 'log_l2'."""
+    'count', 'l2', 'tfidf_l2' and 'log_l2'."""
     # Implementation checked superficially 28 June.
     count_vectorizer = CountVectorizer(stop_words=None, lowercase=True, dtype='int32')
     dt_matrix = count_vectorizer.fit_transform(corpus)
@@ -106,7 +106,7 @@ def create_dt_matrix(corpus, processing='count'):
         dt_matrix_tfidf_l2 = dt_matrix_tfidf_l2.toarray()
         return pd.DataFrame(dt_matrix_tfidf_l2, index=corpus, columns=terms), terms
     # print(pd.DataFrame(dt_matrix, index=item_corpus, columns=count_vectorizer.get_feature_names()).head(5))
-    if processing == 'log' or processing == 'log_l2':
+    if processing == 'log_l2':
         # TODO: Gives RuntimeWarning: divide by zero encountered in log
         # Apply log entropy and L2 normalization to count matrix.
         # https://radimrehurek.com/gensim/models/logentropy_model.html
@@ -119,11 +119,8 @@ def create_dt_matrix(corpus, processing='count'):
                                                             axis=0), np.log(len(dt_matrix) + 1)), (len(dt_matrix), 1))
         final_weight_matrix = np.multiply(local_weight_matrix, global_weight_matrix)
         dt_matrix_log = np.multiply(dt_matrix, final_weight_matrix)
-        if processing == 'log':
-            return pd.DataFrame(dt_matrix_log, index=corpus, columns=terms), terms
-        else:
-            dt_matrix_log_l2 = Normalizer(copy=True, norm='l2').fit_transform(dt_matrix_log)
-            return pd.DataFrame(dt_matrix_log_l2, index=corpus, columns=terms), terms
+        dt_matrix_log_l2 = Normalizer(copy=True, norm='l2').fit_transform(dt_matrix_log)
+        return pd.DataFrame(dt_matrix_log_l2, index=corpus, columns=terms), terms
     assert False, "chosen processing method not implemented."
 
 
@@ -299,7 +296,7 @@ def test_ltvg():
 
 
 def items_vector_average_glove(dtm_identifier, vector_dict, denominator=None):
-    # TODO: out of date
+    # TODO: completely out of date
     """Translate items into pre-trained GloVe vector space and returns the matrix of item vectors. Sums term
     vectors of terms in item with passed document-term matrix as weighting factor and divides vector according
     to passed denominator mode."""
@@ -331,7 +328,7 @@ def items_vector_average_glove(dtm_identifier, vector_dict, denominator=None):
     return item_vectors
 
 
-def aggregate_item_similarity(dtm_items, term_vectors, n_similarities=2, verbose=True):
+def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose=False):
     # TODO: doc-string
     # TODO: implementation is completely agnostic to dt_matrix processing, e.g. normalizing -> try weighted avg
     # Compute cosine term similarity as matrix.
@@ -340,19 +337,19 @@ def aggregate_item_similarity(dtm_items, term_vectors, n_similarities=2, verbose
           np.count_nonzero(np.triu(term_similarity, 1)))
 
     # Aggregate item similarity from term similarities.
-    items = dtm_items.index.values
-    dtm_items = np.asarray(dtm_items)
-    item_similarity = np.zeros([len(dtm_items), len(dtm_items)])
+    items = dt_matrix.index.values
+    dt_matrix = np.asarray(dt_matrix)
+    item_similarity = np.zeros([len(dt_matrix), len(dt_matrix)])
     n_fields = (len(item_similarity) ** 2 - len(item_similarity)) / 2  # n fields in upper triu for print
     ctr = 0  # counter for print
     ctr_one = 0  # counter for item-relationships with only one non-zero term similarity
     ctr_none = 0  # counter for item-relationships with no non-zero term similarity
-    for ind_1 in range(len(dtm_items) - 1):  # rows
-        for ind_2 in range(ind_1 + 1, len(dtm_items)):  # columns
+    for ind_1 in range(len(dt_matrix) - 1):  # rows
+        for ind_2 in range(ind_1 + 1, len(dt_matrix)):  # columns
             # Implementation checked manually, excluding exception handling.
             # Get term similarities between the items.
-            term_indices_1 = np.where(dtm_items[ind_1] != 0)[0]
-            term_indices_2 = np.where(dtm_items[ind_2] != 0)[0]
+            term_indices_1 = np.where(dt_matrix[ind_1] != 0)[0]
+            term_indices_2 = np.where(dt_matrix[ind_2] != 0)[0]
             term_indices_all = []
             # TODO: test these two lines again
             for i1 in term_indices_1:
@@ -379,6 +376,42 @@ def aggregate_item_similarity(dtm_items, term_vectors, n_similarities=2, verbose
                                    columns=items)
     # item_similarity = np.fill_diagonal(item_similarity, 1)
     return item_similarity
+
+
+def test_ais():
+    dt_matrix = np.asarray([[0.61449708, 0., 0., 0.61449708, 0., 0., 0., 0., 0.34984759, 0.34984759, 0., 0.],
+                            [0., 0.54848033, 0., 0., 0.54848033, 0.54848033, 0., 0., 0.31226271, 0., 0., 0.],
+                            [0., 0., 0.86903011, 0., 0., 0., 0., 0., 0., 0.49475921, 0., 0.],
+                            [0., 0., 0., 0., 0., 0., 0.27683498, 0.87754612, 0., 0., 0.27683498, 0.27683498]])
+    documents = np.asarray(['it technolog advanc situat',
+                            "mari don't like situat",
+                            'technolog great',
+                            'yes sir sir that question'])
+    terms = np.asarray(['advanc', 'don', 'great', 'it', 'like', 'mari', 'question', 'sir', 'situat',
+                        'technolog', 'that', 'yes'])
+    dt_matrix = pd.DataFrame(dt_matrix, index=documents, columns=terms)
+    vector_dict = {'advanc': [0.39588465221557745, -1.2575977953455109e-08, 1.249000902703301e-16, 0.48723035562135314],
+                   'don': [0.18859491626619804, 0.46382576479578286, -5.84601811404184e-16, -0.232110931026861],
+                   'great': [0.47345367495179425, -0.46382576898144157, -4.579669976578771e-16, -0.5826974842832673],
+                   'it': [0.39588465221557745, -1.2575978064477411e-08, -6.938893903907228e-18, 0.4872303556213531],
+                   'like': [0.18859491626619812, 0.46382576479578286, -5.689893001203927e-16, -0.23211093102686112],
+                   'mari': [0.18859491626619812, 0.46382576479578286, -5.689893001203927e-16, -0.23211093102686112],
+                   'question': [1.7607443281164592e-16, 1.3183898417423734e-16, 0.27683497845223565,
+                                -1.3183898417423734e-16],
+                   'sir': [5.551115123125783e-16, 3.677613769070831e-16, 0.877546115093703, -5.689893001203927e-16],
+                   'situat': [0.33275791820247796, 0.2640668742960114, -2.706168622523819e-16, 0.1452454665254026],
+                   'technolog': [0.49493468508898575, -0.2640668886156101, -2.706168622523819e-16,
+                                 -0.05435167411847225],
+                   'that': [1.7607443281164592e-16, 1.3183898417423734e-16, 0.27683497845223565,
+                            -1.3183898417423734e-16],
+                   'yes': [1.7607443281164592e-16, 1.3183898417423734e-16, 0.27683497845223565,
+                           -1.3183898417423734e-16]}
+    term_vectors = term_vectors_from_dict(vector_dict, terms)
+    n_similarities = 2
+    verbose = True
+    result = aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=n_similarities, verbose=verbose)
+    print(result, "\n")
+    info(result)
 
 
 def aggregate_construct_similarity(item_similarity, n_similarities=2, verbose=True):
