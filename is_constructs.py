@@ -198,40 +198,43 @@ def test_tvfd():
     info(result)
 
 
-def train_term_vectors_lsa(dtm_train, source_terms, target_terms, n_components=300, return_doc_vectors=False,
-                           verbose=False):
+def train_term_vectors_lsa(dt_matrix, n_components=300, return_doc_vectors=False):
     """Train term and item vectors with SVD a.k.a. LSA."""
-    assert len(dtm_train) >= n_components, "Number of training documents has to be >= number of components."
+    # Implementation checked 28 June.
+    assert len(dt_matrix) >= n_components, "Number of training documents has to be >= number of components."
+    documents = dt_matrix.index.values
+    terms = dt_matrix.columns.values
     t_svd = TruncatedSVD(n_components=n_components, algorithm='randomized')
-    doc_vectors = t_svd.fit_transform(np.asarray(dtm_train))
-    source_term_vectors = t_svd.components_.T
-    source_term_vectors = pd.DataFrame(source_term_vectors, index=source_terms)
-    # TODO: just pass the full vector dict to term_vectors_from_dict(...) and deal with oov words there
-    # TODO: if doing the above, remember to adjust load_term_vectors_glove(...)
-    vector_dict = {}
-    ctr_oov = 0
-    ctr = 0
-    for term in target_terms:
-        try:
-            vector_dict[term] = source_term_vectors.loc[term]
-        except KeyError:
-            # Set vector to zero if out of vocabulary word.
-            vector_dict[term] = np.zeros(len(source_term_vectors[0]))
-            ctr_oov += 1
-        ctr += 1
-        if verbose and ctr % 500 == 0:
-            print("Creating LSA vector dictionary.", ctr / len(source_terms) * 100, "%",
-                  end="\r")
-    print(ctr_oov, "out of vocabulary words.\n")
-    term_vectors = term_vectors_from_dict(vector_dict, target_terms)
+    doc_vectors = t_svd.fit_transform(np.asarray(dt_matrix))
+    doc_vectors = pd.DataFrame(doc_vectors, index=documents)
+    source_term_vectors = t_svd.components_
+    source_term_vectors = pd.DataFrame(source_term_vectors, columns=terms)
+    vector_dict = source_term_vectors.to_dict(orient='list')
     if return_doc_vectors:
-        return term_vectors, doc_vectors
+        return vector_dict, doc_vectors
     else:
-        return term_vectors
+        return vector_dict
 
 
 def test_ttvlsa():
-    pass
+    dt_matrix = np.asarray([[0.61449708, 0., 0., 0.61449708, 0., 0., 0., 0., 0.34984759, 0.34984759, 0., 0.],
+                            [0., 0.54848033, 0., 0., 0.54848033, 0.54848033, 0., 0., 0.31226271, 0., 0., 0.],
+                            [0., 0., 0.86903011, 0., 0., 0., 0., 0., 0., 0.49475921, 0., 0.],
+                            [0., 0., 0., 0., 0., 0., 0.27683498, 0.87754612, 0., 0., 0.27683498, 0.27683498]])
+    documents = np.asarray(['it technolog advanc situat',
+                            "mari don't like situat",
+                            'technolog great',
+                            'yes sir sir that question'])
+    terms = np.asarray(['advanc', 'don', 'great', 'it', 'like', 'mari', 'question', 'sir', 'situat',
+                        'technolog', 'that', 'yes'])
+    dt_matrix = pd.DataFrame(dt_matrix, index=documents, columns=terms)
+    n_components = 4
+    return_doc_vectors = True
+    result_1, result_2 = train_term_vectors_lsa(dt_matrix, n_components=n_components,
+                                                return_doc_vectors=return_doc_vectors)
+    print(result_1, "\n", result_2, "\n")
+    info(result_1)
+    info(result_2)
 
 
 def load_term_vectors_glove(file_name, target_terms, reduce_dict=False, verbose=True):
@@ -450,7 +453,7 @@ print("Document-term matrices prepared (docs x terms).\n")
 
 # Compute construct similarity matrix for LSA
 print("Creating construct similarity matrix with LSA.")
-term_vectors_lsa = train_term_vectors_lsa(dtm_items, source_terms=TERMS_ITEMS,
+term_vectors_lsa = term_vectors_from_dict(train_term_vectors_lsa(dtm_items, source_terms=TERMS_ITEMS),
                                           target_terms=TERMS_ITEMS)
 item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2)
 construct_similarity_lsa = aggregate_construct_similarity(item_similarity=item_similarity_lsa, n_similarities=2)
