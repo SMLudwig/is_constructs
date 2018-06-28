@@ -164,15 +164,37 @@ def test_rcig():
     info(result)
 
 
-def term_vectors_from_dict(vector_dict, target_terms):
+def term_vectors_from_dict(vector_dict, target_terms, verbose=False):
     """Creates term-vector matrix DataFrame of passed terms from passed vector dict."""
+    # TODO: deal with OOV words better than just setting a zero vector.
+    # Implementation checked 28 June.
     term_vectors = np.zeros([len(target_terms), len(next(iter(vector_dict.values())))])
     i = 0
+    ctr_oov = 0
     for term in target_terms:
-        term_vectors[i] = vector_dict[term]
+        try:
+            term_vectors[i] = vector_dict[term]
+        except KeyError:
+            term_vectors[i] = np.zeros(len(next(iter(vector_dict.values()))))
+            ctr_oov += 1
         i += 1
+    if verbose:
+        print("Created term vectors from dictionary.", ctr_oov, "OOV words.")
     term_vectors = pd.DataFrame(term_vectors, index=target_terms)
     return term_vectors
+
+
+def test_tvfd():
+    vector_dict = {'it': [0.2, 0.4, -0.1],
+                   'technolog': [0.7, -0.9, -0.2],
+                   'advanc': [0.6, -0.9, 0],
+                   'green': [-0.6, -0.5, -0.4],
+                   'lime': [0.3, 0.6, 0.8]
+                   }
+    target_terms = ['it', 'technolog', 'advanc', 'situat']
+    result = term_vectors_from_dict(vector_dict, target_terms)
+    print(result, "\n")
+    info(result)
 
 
 def train_term_vectors_lsa(dtm_train, source_terms, target_terms, n_components=300, return_doc_vectors=False,
