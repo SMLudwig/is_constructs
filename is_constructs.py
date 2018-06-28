@@ -252,7 +252,7 @@ def load_term_vectors_glove(file_name, target_terms, parser_config=None, new_red
     """Loads pre-trained GloVe term vectors from file. If option new_reduce_dict=True, load full dictionary and
     reduce it to the passed target_terms, save reduced dict to .npy file. Option to use parser_config to parse
     dictionary keys, but this currently results in multiple vectors being returned for the same stemmed word."""
-    # Implementation of dict checked.
+    # Implementation checked 28 June.
     if not new_reduce_dict:
         vector_dict = np.load(file_name).item()
     else:
@@ -336,6 +336,7 @@ def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose
     similarity, the average similarity of the two most similar terms between each item pair is taken. This is
     the same concept as established by Larsen and Bong 2016 for aggregating construct similarity."""
     # TODO: implementation is completely agnostic to dt_matrix processing, e.g. normalizing -> try weighted avg
+    # Implementation checked 28 June.
     # Compute cosine term similarity as matrix.
     term_similarity = np.asarray(np.asmatrix(term_vectors) * np.asmatrix(term_vectors).T)
     print("Cosine similarity of terms computed. Number unique term pairs =",
@@ -387,13 +388,13 @@ def test_ais():
                             [0., 0.54848033, 0., 0., 0.54848033, 0.54848033, 0., 0., 0.31226271, 0., 0., 0.],
                             [0., 0., 0.86903011, 0., 0., 0., 0., 0., 0., 0.49475921, 0., 0.],
                             [0., 0., 0., 0., 0., 0., 0.27683498, 0.87754612, 0., 0., 0.27683498, 0.27683498]])
-    documents = np.asarray(['it technolog advanc situat',
-                            "mari don't like situat",
-                            'technolog great',
-                            'yes sir sir that question'])
+    items = np.asarray(['it technolog advanc situat',
+                        "mari don't like situat",
+                        'technolog great',
+                        'yes sir sir that question'])
     terms = np.asarray(['advanc', 'don', 'great', 'it', 'like', 'mari', 'question', 'sir', 'situat',
                         'technolog', 'that', 'yes'])
-    dt_matrix = pd.DataFrame(dt_matrix, index=documents, columns=terms)
+    dt_matrix = pd.DataFrame(dt_matrix, index=items, columns=terms)
     vector_dict = {'advanc': [0.39588465221557745, -1.2575977953455109e-08, 1.249000902703301e-16, 0.48723035562135314],
                    'don': [0.18859491626619804, 0.46382576479578286, -5.84601811404184e-16, -0.232110931026861],
                    'great': [0.47345367495179425, -0.46382576898144157, -4.579669976578771e-16, -0.5826974842832673],
@@ -418,21 +419,24 @@ def test_ais():
     info(result)
 
 
-def aggregate_construct_similarity(item_similarity, n_similarities=2, verbose=True):
+def aggregate_construct_similarity(item_similarity, gold_items, variable_ids, n_similarities=2, verbose=False):
     """Computes construct similarities from items in vector space. To aggregate item cosine similarity to construct
     similarity, the average similarity of the two most similar items between each construct pair is taken, as
     established by Larsen and Bong 2016. Creates upper triangular with zero diagonal for efficiency."""
-    # TODO: slight mismatch in number of non-zero elements to expectation... see notes
+    # Implementation checked 28 June. There might be a problem in the indices to fully fill triu, but seems solved.
     item_similarity = np.asarray(item_similarity)
-    construct_similarity = np.zeros([len(VARIABLE_IDS), len(VARIABLE_IDS)])
+    variable_ids = np.sort(variable_ids)
+    construct_similarity = np.zeros([len(variable_ids), len(variable_ids)])
     n_fields = (len(construct_similarity) ** 2 - len(construct_similarity)) / 2  # n fields in upper triu for print
     ctr = 0  # counter for print
-    for ind_1 in range(len(VARIABLE_IDS) - 1):  # rows
-        for ind_2 in range(ind_1 + 1, len(VARIABLE_IDS)):  # columns
+    for ind_1 in range(len(variable_ids) - 1):  # rows
+        for ind_2 in range(ind_1 + 1, len(variable_ids)):  # columns
             # Implementation checked manually.
             # Get item similarities between the constructs.
-            item_indices_1 = np.where(GOLD_ITEMS['VariableId'] == VARIABLE_IDS[ind_1])[0]
-            item_indices_2 = np.where(GOLD_ITEMS['VariableId'] == VARIABLE_IDS[ind_2])[0]
+            item_indices_1 = np.where(gold_items['VariableId'] == variable_ids[ind_1])[0]
+            item_indices_2 = np.where(gold_items['VariableId'] == variable_ids[ind_2])[0]
+            print("Item_indices:", item_indices_1, item_indices_2)
+            # Combine item-indices so they fill the upper triangular of the construct similarity matrix.
             item_indices_all = []
             for i1 in item_indices_1:
                 item_indices_all += [(i1, i2) for i2 in item_indices_2]
@@ -443,8 +447,31 @@ def aggregate_construct_similarity(item_similarity, n_similarities=2, verbose=Tr
             ctr += 1
             if verbose and ctr % 4000 == 0:
                 print("Aggregating item to construct similarity.", ctr / n_fields * 100, "%", end='\r')
-        construct_similarity = pd.DataFrame(construct_similarity, index=VARIABLE_IDS, columns=VARIABLE_IDS)
+    construct_similarity = pd.DataFrame(construct_similarity, index=variable_ids, columns=variable_ids)
     return construct_similarity
+
+
+def test_acs():
+    item_similarity = np.asarray([[1.00000000e+00, 8.59243068e-01, 8.90522750e-01, 2.30422117e-16],
+                                  [8.59243068e-01, 1.00000000e+00, 1.81708876e-01, -5.31647944e-18],
+                                  [8.90522750e-01, 1.81708876e-01, 1.00000000e+00, -1.50979114e-17],
+                                  [2.30422117e-16, -5.31647944e-18, -1.50979114e-17, 1.00000000e+00]])
+    items = np.asarray(['it technolog advanc situat',
+                        "mari don't like situat",
+                        'technolog great',
+                        'yes sir sir that question'])
+    item_similarity = pd.DataFrame(item_similarity, index=items, columns=items)
+    gold_items = pd.DataFrame([[1, 1],
+                               [3, 1],
+                               [6, 4],
+                               [7, 9]], columns=['ItemId', 'VariableId'])
+    variable_ids = [4, 1, 9]
+    n_similarities = 2
+    verbose = True
+    result = aggregate_construct_similarity(item_similarity, gold_items=gold_items, variable_ids=variable_ids,
+                                            n_similarities=n_similarities, verbose=verbose)
+    print(result, "\n")
+    info(result)
 
 
 def evaluate(construct_similarity):
