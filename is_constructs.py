@@ -42,6 +42,7 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
                 continue
             if stemmer is not None:
                 try:
+                    # TODO: remove default, check if stemmer exists instead
                     parsed_docs[i] += {
                         # 'lovins': stem_lovins(word) + ' ', results in errors with all three algorithms, unknown cause
                         'porter2': stem_porter2(word) + ' ',
@@ -56,7 +57,9 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
         parsed_docs[i] = parsed_docs[i].strip()  # remove excess white space
     parsed_docs = list(filter(None, parsed_docs))
     parsed_docs = np.asarray(parsed_docs)
-    return parsed_docs
+    parser_config = {'stemmer': stemmer, 'lower': lower, 'remove_stop_words': remove_stop_words,
+                     'ignore_chars': ignore_chars}
+    return parsed_docs, parser_config
 
 
 def test_pt():
@@ -69,10 +72,11 @@ def test_pt():
     lower = True
     remove_stop_words = True
     verbose = True
-    result = parse_text(documents, stemmer=stemmer, lower=lower, remove_stop_words=remove_stop_words,
-                        verbose=verbose)
-    print(result, "\n")
-    info(result)
+    result_1, result_2 = parse_text(documents, stemmer=stemmer, lower=lower, remove_stop_words=remove_stop_words,
+                                    verbose=verbose)
+    print(result_1, "\n", result_2, "\n")
+    info(result_1)
+    info(result_2)
 
 
 def create_dt_matrix(corpus, processing='count'):
@@ -237,10 +241,10 @@ def test_ttvlsa():
     info(result_2)
 
 
-def load_term_vectors_glove(file_name, target_terms, reduce_dict=False, verbose=True):
+def load_term_vectors_glove(file_name, target_terms, parser_config=None, new_reduce_dict=False, verbose=False):
     # TODO: doc-string
     # Implementation of dict checked.
-    if not reduce_dict:
+    if not new_reduce_dict:
         vector_dict = np.load(file_name).item()
     else:
         # Load full pre-trained GloVe vector dictionary and extract relevant term vectors.
@@ -249,28 +253,36 @@ def load_term_vectors_glove(file_name, target_terms, reduce_dict=False, verbose=
         print("Full GloVe vector file loaded as Pandas DataFrame.")
         # UserWarning: DataFrame columns are not unique, some columns will be omitted. This is caused by two
         # duplicate NaN indices and reduces the vocabulary to 399998 words.
-        # The following line might make it faster, but requires too much RAM.
-        # vectors_full = vectors_full.transpose().to_dict(orient='list')
-        # TODO: deal with out of vocabulary words better
+        if parser_config is not None:
+            vectors_full.index.rename(parse_text(vectors_full.index.values, stemmer=parser_config['stemmer'],
+                                                 lower=True,
+                                                 remove_stop_words=True, verbose=False))
         vector_dict = {}
-        ctr_oov = 0
         ctr = 0
         for term in target_terms:
             try:
                 vector_dict[term] = vectors_full.loc[term]
             except KeyError:
-                # Set vector to zero if out of vocabulary word.
-                # TODO: replace length measure by length of pd dataframe in case the first word is oov already
-                vector_dict[term] = np.zeros(len(next(iter(vector_dict.values()))))
-                ctr_oov += 1
+                continue  # deal with out of vocabulary words in term_vectors_from_dict(...)
             ctr += 1
             if verbose and ctr % 200 == 0:
                 print("Creating GloVe vector dictionary of relevant terms.", ctr / len(target_terms) * 100, "%",
                       end="\r")
-        print(ctr_oov, "out of vocabulary words.\n")
         np.save(file_name[:-4] + '_reduced.npy', vector_dict)
-    term_vectors = term_vectors_from_dict(vector_dict, target_terms)
-    return term_vectors
+    return vector_dict
+
+
+def test_ltvg():
+    file_name = 'glove-pre-trained/glove.6B.50d.txt'
+    target_terms = np.asarray(['advanc', 'don', 'great', 'it', 'like', 'mari', 'question', 'sir', 'situat',
+                               'technolog', 'that', 'yes'])
+    stemmer = None
+    new_reduce_dict = True
+    verbose = True
+    result = load_term_vectors_glove(file_name, target_terms, stemmer=stemmer, new_reduce_dict=new_reduce_dict,
+                                     verbose=verbose)
+    print(result, "\n")
+    info(result)
 
 
 def items_vector_average_glove(dtm_identifier, vector_dict, denominator=None):
@@ -453,7 +465,7 @@ print("Document-term matrices prepared (docs x terms).\n")
 
 # Compute construct similarity matrix for LSA
 print("Creating construct similarity matrix with LSA.")
-term_vectors_lsa = term_vectors_from_dict(train_term_vectors_lsa(dtm_items, source_terms=TERMS_ITEMS),
+term_vectors_lsa = term_vectors_from_dict(train_term_vectors_lsa(dtm_items),
                                           target_terms=TERMS_ITEMS)
 item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2)
 construct_similarity_lsa = aggregate_construct_similarity(item_similarity=item_similarity_lsa, n_similarities=2)
@@ -462,7 +474,7 @@ print("Construct similarity matrix computed with LSA.\n")
 # Compute construct similarity matrix for GloVe
 print("Creating construct similarity matrix with GloVe.")
 term_vectors_glove = load_term_vectors_glove(file_name='glove-pre-trained/glove.6B.300d.txt',
-                                             target_terms=TERMS_ITEMS, reduce_dict=True, verbose=True)
+                                             target_terms=TERMS_ITEMS, new_reduce_dict=True, verbose=True)
 item_similarity_glove = aggregate_item_similarity(dtm_items, term_vectors_glove,
                                                   n_similarities=2)
 construct_similarity_glove = aggregate_construct_similarity(item_similarity=item_similarity_glove, n_similarities=2)
