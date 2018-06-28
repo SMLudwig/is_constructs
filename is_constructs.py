@@ -23,10 +23,11 @@ def info(var):
 
 
 def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
-               ignore_chars='''.,:;"!?-/()[]{}0123456789''', verbose=False):
+               return_config=False, ignore_chars='''.,:;"!?-/()[]{}0123456789''', verbose=False):
     """Parses text with options for removing specified characters, removing stop-words, converting to lower-case
     and stemming (https://pypi.org/project/stemming/1.0/). Available stemming algorithms are 'porter2' and
     'paicehusk'. Paice/Husk seems prone to over-stemming."""
+    # TODO: still returns empty '' strings. Also returns "'s".
     # Implementation checked 28 June.
     parsed_docs = []
     for i in range(len(documents)):
@@ -59,7 +60,10 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
     parsed_docs = np.asarray(parsed_docs)
     parser_config = {'stemmer': stemmer, 'lower': lower, 'remove_stop_words': remove_stop_words,
                      'ignore_chars': ignore_chars}
-    return parsed_docs, parser_config
+    if return_config:
+        return parsed_docs, parser_config
+    else:
+        return parsed_docs
 
 
 def test_pt():
@@ -71,9 +75,11 @@ def test_pt():
     stemmer = 'porter2'
     lower = True
     remove_stop_words = True
+    return_config = True
+    ignore_chars = '''.,:;"!?-/()[]{}0123456789'''
     verbose = True
     result_1, result_2 = parse_text(documents, stemmer=stemmer, lower=lower, remove_stop_words=remove_stop_words,
-                                    verbose=verbose)
+                                    return_config=return_config, ignore_chars=ignore_chars, verbose=verbose)
     print(result_1, "\n", result_2, "\n")
     info(result_1)
     info(result_2)
@@ -251,12 +257,12 @@ def load_term_vectors_glove(file_name, target_terms, parser_config=None, new_red
         with open(file_name, 'r') as file:
             vectors_full = pd.read_table(file, sep=' ', index_col=0, header=None, quoting=csv.QUOTE_NONE)
         print("Full GloVe vector file loaded as Pandas DataFrame.")
-        # UserWarning: DataFrame columns are not unique, some columns will be omitted. This is caused by two
-        # duplicate NaN indices and reduces the vocabulary to 399998 words.
+        # TODO:
+        vectors_full.index = pd.Series(vectors_full.index).replace(np.nan, 'nan')
         if parser_config is not None:
-            vectors_full.index.rename(parse_text(vectors_full.index.values, stemmer=parser_config['stemmer'],
-                                                 lower=True,
-                                                 remove_stop_words=True, verbose=False))
+            vectors_full.index = pd.Series(parse_text(vectors_full.index.values, stemmer=parser_config['stemmer'],
+                                                      lower=parser_config['lower'], verbose=False,
+                                                      remove_stop_words=parser_config['remove_stop_words']))
         vector_dict = {}
         ctr = 0
         for term in target_terms:
@@ -276,11 +282,12 @@ def test_ltvg():
     file_name = 'glove-pre-trained/glove.6B.50d.txt'
     target_terms = np.asarray(['advanc', 'don', 'great', 'it', 'like', 'mari', 'question', 'sir', 'situat',
                                'technolog', 'that', 'yes'])
-    stemmer = None
+    parser_config = {'stemmer': 'porter2', 'lower': True, 'remove_stop_words': True,
+                     'ignore_chars': '.,:;"!?-/()[]{}0123456789'}
     new_reduce_dict = True
     verbose = True
-    result = load_term_vectors_glove(file_name, target_terms, stemmer=stemmer, new_reduce_dict=new_reduce_dict,
-                                     verbose=verbose)
+    result = load_term_vectors_glove(file_name, target_terms, parser_config=parser_config,
+                                     new_reduce_dict=new_reduce_dict, verbose=verbose)
     print(result, "\n")
     info(result)
 
