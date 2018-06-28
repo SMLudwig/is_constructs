@@ -16,9 +16,9 @@ import matplotlib.pyplot as plt
 
 
 def info(var):
-    try:
+    if isinstance(var, np.ndarray):
         print("Type:", type(var), "\nShape:", np.shape(var))
-    except ValueError:
+    else:
         print("Type:", type(var), "\nLength:", len(var))
 
 
@@ -31,6 +31,7 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
     # Implementation checked 28 June.
     parsed_docs = []
     for i in range(len(documents)):
+        assert isinstance(documents[i], str), "Document not a string." + str(documents[i])
         if ignore_chars != '':
             documents[i] = documents[i].translate({ord(c): ' ' for c in ignore_chars})
         if lower:
@@ -248,7 +249,9 @@ def test_ttvlsa():
 
 
 def load_term_vectors_glove(file_name, target_terms, parser_config=None, new_reduce_dict=False, verbose=False):
-    # TODO: doc-string
+    """Loads pre-trained GloVe term vectors from file. If option new_reduce_dict=True, load full dictionary and
+    reduce it to the passed target_terms, save reduced dict to .npy file. Option to use parser_config to parse
+    dictionary keys, but this currently results in multiple vectors being returned for the same stemmed word."""
     # Implementation of dict checked.
     if not new_reduce_dict:
         vector_dict = np.load(file_name).item()
@@ -257,12 +260,14 @@ def load_term_vectors_glove(file_name, target_terms, parser_config=None, new_red
         with open(file_name, 'r') as file:
             vectors_full = pd.read_table(file, sep=' ', index_col=0, header=None, quoting=csv.QUOTE_NONE)
         print("Full GloVe vector file loaded as Pandas DataFrame.")
-        # TODO:
+        # Parse keys of the GloVe vectors with the same parser configuration used on the corpus.
         vectors_full.index = pd.Series(vectors_full.index).replace(np.nan, 'nan')
+        # TODO: parsing keys results in multiple vectors being returned for the same term
         if parser_config is not None:
             vectors_full.index = pd.Series(parse_text(vectors_full.index.values, stemmer=parser_config['stemmer'],
                                                       lower=parser_config['lower'], verbose=False,
-                                                      remove_stop_words=parser_config['remove_stop_words']))
+                                                      return_config=False, remove_stop_words=False,
+                                                      ignore_chars=''))
         vector_dict = {}
         ctr = 0
         for term in target_terms:
@@ -284,6 +289,7 @@ def test_ltvg():
                                'technolog', 'that', 'yes'])
     parser_config = {'stemmer': 'porter2', 'lower': True, 'remove_stop_words': True,
                      'ignore_chars': '.,:;"!?-/()[]{}0123456789'}
+    parser_config = None
     new_reduce_dict = True
     verbose = True
     result = load_term_vectors_glove(file_name, target_terms, parser_config=parser_config,
