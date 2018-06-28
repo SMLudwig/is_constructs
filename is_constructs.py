@@ -16,14 +16,17 @@ import matplotlib.pyplot as plt
 
 
 def info(var):
-    print("Type:", type(var), "\nShape:", np.shape(var))
+    try:
+        print("Type:", type(var), "\nShape:", np.shape(var))
+    except ValueError:
+        print("Type:", type(var), "\nLength:", len(var))
 
 
 def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
                ignore_chars='''.,:;"!?-/()[]{}0123456789''', verbose=False):
     """Parses text with options for removing specified characters, removing stop-words, converting to lower-case
-    and stemming (https://pypi.org/project/stemming/1.0/). Available stemming algorithms are porter2 and paicehusk.
-    Paice/Husk seems prone to over-stemming."""
+    and stemming (https://pypi.org/project/stemming/1.0/). Available stemming algorithms are 'porter2' and
+    'paicehusk'. Paice/Husk seems prone to over-stemming."""
     # Implementation checked 28 June.
     parsed_docs = []
     for i in range(len(documents)):
@@ -58,9 +61,9 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
 
 def test_pt():
     documents = np.asarray(['It\'s a technologically advanced situation.',
-                            'I (Mary) don\'t like the system.',
+                            'I (Mary) don\'t like the system in this situation.',
                             'I am.',
-                            '000 Greatness in you is something.',
+                            '000 Technological greatness in a system is something.',
                             'Yes, sir (no, sir?): That\'s the question.'])
     stemmer = 'porter2'
     lower = True
@@ -72,57 +75,93 @@ def test_pt():
     info(result)
 
 
-def create_dt_matrices(corpus):
-    """Creates and returns a dictionary of document-term matrix DataFrames with different processing methods.
-    Also returns the feature names (terms) extracted by the vectorizer."""
+def create_dt_matrix(corpus, processing='count'):
+    """Creates and returns document-term matrix DataFrame with the specified processing method.
+    Also returns the feature names (terms) extracted by the vectorizer. Available processing methods are
+    'count', 'l2', 'tfidf_l2', 'log' and 'log_l2'."""
+    # Implementation checked superficially 28 June.
     count_vectorizer = CountVectorizer(stop_words=None, lowercase=True, dtype='int32')
     dt_matrix = count_vectorizer.fit_transform(corpus)
     dt_matrix = dt_matrix.toarray()
-    dt_matrix_l2 = Normalizer(copy=True, norm='l2').fit_transform(dt_matrix)
-    tfidf_vectorizer = TfidfVectorizer(stop_words=None, lowercase=True, norm='l2', use_idf=True, smooth_idf=True)
-    dt_matrix_tfidf_l2 = tfidf_vectorizer.fit_transform(corpus)
-    dt_matrix_tfidf_l2 = dt_matrix_tfidf_l2.toarray()
     terms = count_vectorizer.get_feature_names()
+    if processing == 'count':
+        return pd.DataFrame(dt_matrix, index=corpus, columns=terms), terms
+    if processing == 'l2':
+        dt_matrix_l2 = Normalizer(copy=True, norm='l2').fit_transform(dt_matrix)
+        return pd.DataFrame(dt_matrix_l2, index=corpus, columns=terms), terms
+    if processing == 'tfidf_l2':
+        tfidf_vectorizer = TfidfVectorizer(stop_words=None, lowercase=True, norm='l2', use_idf=True, smooth_idf=True)
+        dt_matrix_tfidf_l2 = tfidf_vectorizer.fit_transform(corpus)
+        dt_matrix_tfidf_l2 = dt_matrix_tfidf_l2.toarray()
+        return pd.DataFrame(dt_matrix_tfidf_l2, index=corpus, columns=terms), terms
     # print(pd.DataFrame(dt_matrix, index=item_corpus, columns=count_vectorizer.get_feature_names()).head(5))
-
-    # Apply log entropy and L2 normalization to count matrix.
-    # https://radimrehurek.com/gensim/models/logentropy_model.html
-    # Implementation checked manually.
-    local_weight_matrix = np.log(dt_matrix + 1)
-    p_matrix = np.divide(dt_matrix, np.tile(np.sum(dt_matrix, axis=0), (len(dt_matrix), 1)))
-    log_p_matrix = np.log(p_matrix)
-    log_p_matrix[np.isneginf(log_p_matrix)] = 0
-    global_weight_matrix = np.tile(1 + np.divide(np.sum(np.multiply(p_matrix, log_p_matrix),
-                                                        axis=0), np.log(len(dt_matrix) + 1)), (len(dt_matrix), 1))
-    final_weight_matrix = np.multiply(local_weight_matrix, global_weight_matrix)
-    dt_matrix_log = np.multiply(dt_matrix, final_weight_matrix)
-    dt_matrix_log_l2 = Normalizer(copy=True, norm='l2').fit_transform(dt_matrix_log)
-
-    dt_matrices = {
-        'dtm_count': pd.DataFrame(dt_matrix, index=corpus, columns=terms),
-        'dtm_l2': pd.DataFrame(dt_matrix_l2, index=corpus, columns=terms),
-        'dtm_log': pd.DataFrame(dt_matrix_log, index=corpus, columns=terms),
-        'dtm_log_l2': pd.DataFrame(dt_matrix_log_l2, index=corpus, columns=terms),
-        'dtm_tfidf_l2': pd.DataFrame(dt_matrix_tfidf_l2, index=corpus, columns=terms),
-    }
-    return dt_matrices, terms
+    if processing == 'log' or processing == 'log_l2':
+        # TODO: Gives RuntimeWarning: divide by zero encountered in log
+        # Apply log entropy and L2 normalization to count matrix.
+        # https://radimrehurek.com/gensim/models/logentropy_model.html
+        # Implementation checked manually.
+        local_weight_matrix = np.log(dt_matrix + 1)
+        p_matrix = np.divide(dt_matrix, np.tile(np.sum(dt_matrix, axis=0), (len(dt_matrix), 1)))
+        log_p_matrix = np.log(p_matrix)
+        log_p_matrix[np.isneginf(log_p_matrix)] = 0
+        global_weight_matrix = np.tile(1 + np.divide(np.sum(np.multiply(p_matrix, log_p_matrix),
+                                                            axis=0), np.log(len(dt_matrix) + 1)), (len(dt_matrix), 1))
+        final_weight_matrix = np.multiply(local_weight_matrix, global_weight_matrix)
+        dt_matrix_log = np.multiply(dt_matrix, final_weight_matrix)
+        if processing == 'log':
+            return pd.DataFrame(dt_matrix_log, index=corpus, columns=terms), terms
+        else:
+            dt_matrix_log_l2 = Normalizer(copy=True, norm='l2').fit_transform(dt_matrix_log)
+            return pd.DataFrame(dt_matrix_log_l2, index=corpus, columns=terms), terms
+    assert False, "chosen processing method not implemented."
 
 
-def recreate_construct_identity_gold(pool_ids):
-    """Translates the gold standard by Larsen and Bong 2016 into a binary construct identity matrix.
-    Creates upper triangular with zero diagonal for efficiency."""
-    variable_ids = np.sort(np.unique(GOLD_STANDARD['VariableID'][GOLD_STANDARD['Poolid'].isin(pool_ids)]))
+def test_cdtm():
+    # Using parsed test corpus.
+    corpus = np.asarray(['it technolog advanc situat',
+                         "mari don't like situat",
+                         'technolog great',
+                         'yes sir sir that question'])
+    processing = 'log_l2'
+    result_1, result_2 = create_dt_matrix(corpus, processing=processing)
+    print(result_1, "\n", np.asarray(result_1), "\n", result_2, "\n")
+    print(np.linalg.norm(np.asarray(result_1), axis=1))
+    info(result_1)
+    info(result_2)
+
+
+def recreate_construct_identity_gold(gold_standard, pool_ids):
+    """Translates the gold standard by Larsen and Bong 2016 into a binary construct identity matrix."""
+    # Implementation checked 28 June.
+    variable_ids = np.sort(np.unique(gold_standard['VariableID'][gold_standard['Poolid'].isin(pool_ids)]))
     construct_identity_gold = np.zeros([len(variable_ids), len(variable_ids)])
     construct_identity_gold = pd.DataFrame(construct_identity_gold, index=variable_ids, columns=variable_ids)
-    for poolID in pool_ids:
-        pool_var_ids = np.asarray(GOLD_STANDARD['VariableID'][GOLD_STANDARD['Poolid'] == poolID])
+    for pool_id in pool_ids:
+        pool_var_ids = np.asarray(gold_standard['VariableID'][gold_standard['Poolid'] == pool_id])
         for ind_1 in range(len(pool_var_ids) - 1):
             var_id_1 = pool_var_ids[ind_1]
             for ind_2 in range(ind_1 + 1, len(pool_var_ids)):
                 var_id_2 = pool_var_ids[ind_2]
-                construct_identity_gold[var_id_1][var_id_2] = 1
+                indices = np.sort(np.asarray([var_id_1, var_id_2]))  # necessary to get upper triangular
+                construct_identity_gold[indices[1]][indices[0]] = 1
+    # Mirror the matrix diagonally and fill diagonal with ones.
+    construct_identity_gold = np.add(np.asarray(construct_identity_gold), np.asarray(construct_identity_gold.T))
+    np.fill_diagonal(construct_identity_gold, 1)
+    construct_identity_gold = pd.DataFrame(construct_identity_gold)
     print("Reconstructed construct identity matrix from gold standard.\n")
     return construct_identity_gold
+
+
+def test_rcig():
+    gold_standard = pd.DataFrame([[1, 1],
+                                  [1, 2],
+                                  [2, 3],
+                                  [2, 4],
+                                  [2, 5]], columns=['Poolid', 'VariableID'])
+    pool_ids = [1, 2]
+    result = recreate_construct_identity_gold(gold_standard, pool_ids)
+    print(result, "\n")
+    info(result)
 
 
 def term_vectors_from_dict(vector_dict, target_terms):
@@ -211,7 +250,7 @@ def items_vector_average_glove(dtm_identifier, vector_dict, denominator=None):
     to passed denominator mode."""
     # Translate items into GloVe vectors.
     # Implementation checked manually, but there are multiple ways of doing this.
-    dt_matrix = dtm_items_dict[dtm_identifier]
+    dt_matrix = dtm_items[dtm_identifier]
     item_vectors = np.zeros([len(dt_matrix), len(next(iter(vector_dict.values())))])
     for row_ind in range(len(dt_matrix)):
         ctr_oov = 0
@@ -318,6 +357,7 @@ def aggregate_construct_similarity(item_similarity, n_similarities=2, verbose=Tr
 
 def evaluate(construct_similarity):
     """Evaluates construct similarity matrix against the Larsen and Bong 2016 gold standard in matrix form."""
+    # TODO: adjust to change in method recreate_construct_identity_gold(...)
     print("Evaluating performance.")
     if PROTOTYPE:
         try:
@@ -377,15 +417,15 @@ corpus_abstracts = parse_text(np.asarray(funk_papers['Abstract']), stemmer='port
 del file
 
 # Create document-term matrices.
-dtm_items_dict, TERMS_ITEMS = create_dt_matrices(CORPUS_ITEMS)
-dtm_train_dict, terms_train = create_dt_matrices(corpus_abstracts)
+dtm_items, TERMS_ITEMS = create_dt_matrix(CORPUS_ITEMS, processing='count')
+dtm_train, terms_train = create_dt_matrix(corpus_abstracts, processing='count')
 print("Document-term matrices prepared (docs x terms).\n")
 
 # Compute construct similarity matrix for LSA
 print("Creating construct similarity matrix with LSA.")
-term_vectors_lsa = train_term_vectors_lsa(dtm_items_dict['dtm_count'], source_terms=TERMS_ITEMS,
+term_vectors_lsa = train_term_vectors_lsa(dtm_items, source_terms=TERMS_ITEMS,
                                           target_terms=TERMS_ITEMS)
-item_similarity_lsa = aggregate_item_similarity(dtm_items_dict['dtm_count'], term_vectors_lsa, n_similarities=2)
+item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2)
 construct_similarity_lsa = aggregate_construct_similarity(item_similarity=item_similarity_lsa, n_similarities=2)
 print("Construct similarity matrix computed with LSA.\n")
 
@@ -393,7 +433,7 @@ print("Construct similarity matrix computed with LSA.\n")
 print("Creating construct similarity matrix with GloVe.")
 term_vectors_glove = load_term_vectors_glove(file_name='glove-pre-trained/glove.6B.300d.txt',
                                              target_terms=TERMS_ITEMS, reduce_dict=True, verbose=True)
-item_similarity_glove = aggregate_item_similarity(dtm_items_dict['dtm_tfidf_l2'], term_vectors_glove,
+item_similarity_glove = aggregate_item_similarity(dtm_items, term_vectors_glove,
                                                   n_similarities=2)
 construct_similarity_glove = aggregate_construct_similarity(item_similarity=item_similarity_glove, n_similarities=2)
 print("Construct similarity matrix computed with GloVe.\n")
@@ -432,7 +472,7 @@ construct_similarity_glove = pd.DataFrame(construct_similarity_glove, index=VARI
 # Parameter search for GloVe document projection by weighted item vectors.
 # Uses old item_vectors_glove(...) function.
 denominator_options = [None, 'sum', 'sum_value-oov', 'norm', 'norm_value-oov']
-grid = [[mat, den] for mat in dtm_items_dict for den in denominator_options]
+grid = [[mat, den] for mat in dtm_items for den in denominator_options]
 # grid = [['dt_matrix', None], ['dt_matrix', 'sum']]
 glove_results = []
 ctr = 0
