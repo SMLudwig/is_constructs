@@ -332,7 +332,9 @@ def items_vector_average_glove(dtm_identifier, vector_dict, denominator=None):
 
 
 def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose=False):
-    # TODO: doc-string
+    """Computes item similarities from terms in vector space. To aggregate term cosine similarity to item
+    similarity, the average similarity of the two most similar terms between each item pair is taken. This is
+    the same concept as established by Larsen and Bong 2016 for aggregating construct similarity."""
     # TODO: implementation is completely agnostic to dt_matrix processing, e.g. normalizing -> try weighted avg
     # Compute cosine term similarity as matrix.
     term_similarity = np.asarray(np.asmatrix(term_vectors) * np.asmatrix(term_vectors).T)
@@ -354,7 +356,6 @@ def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose
             term_indices_1 = np.where(dt_matrix[ind_1] != 0)[0]
             term_indices_2 = np.where(dt_matrix[ind_2] != 0)[0]
             term_indices_all = []
-            # TODO: test these two lines again
             for i1 in term_indices_1:
                 term_indices_all += [(i1, i2) for i2 in term_indices_2]
             term_sim_sub = [term_similarity[i] for i in term_indices_all]
@@ -375,9 +376,9 @@ def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose
     print("Number of item-relationships with only one non-zero term similarity:", ctr_one)
     print("Number of item-relationships with no non-zero term similarity:", ctr_none, '\n')
     # Mirror lower triangular and fill diagonal of the matrix.
-    item_similarity = pd.DataFrame(np.add(item_similarity, item_similarity.T), index=items,
-                                   columns=items)
-    # item_similarity = np.fill_diagonal(item_similarity, 1)
+    item_similarity = np.add(item_similarity, item_similarity.T)
+    np.fill_diagonal(item_similarity, 1)
+    item_similarity = pd.DataFrame(item_similarity, index=items, columns=items)
     return item_similarity
 
 
