@@ -474,23 +474,11 @@ def test_acs():
     info(result)
 
 
-def evaluate(construct_similarity):
+def evaluate(construct_similarity, construct_identity_gold):
     """Evaluates construct similarity matrix against the Larsen and Bong 2016 gold standard in matrix form."""
     # TODO: adjust to change in method recreate_construct_identity_gold(...)
+    # Implementation checked 30 June.
     print("Evaluating performance.")
-    if PROTOTYPE:
-        try:
-            construct_identity_gold = np.loadtxt('construct_identity_gold_prototype.txt')
-        except FileNotFoundError:
-            construct_identity_gold = recreate_construct_identity_gold(POOL_IDS_PROTOTYPE)
-            np.savetxt('construct_identity_gold_prototype.txt', construct_identity_gold)
-    else:
-        try:
-            construct_identity_gold = np.loadtxt('construct_identity_gold.txt')
-        except FileNotFoundError:
-            construct_identity_gold = recreate_construct_identity_gold(VARIABLE_IDS)
-            np.savetxt('construct_identity_gold.txt', construct_identity_gold)
-
     # Unwrap upper triangular of similarity and identity matrix, excluding diagonal.
     # Calculate Receiver Operating Characteristic (ROC) curve.
     construct_similarity = np.asarray(construct_similarity)
@@ -504,6 +492,24 @@ def evaluate(construct_similarity):
     fpr, tpr, thresholds = roc_curve(construct_idn_gold_flat, construct_sim_flat)
     roc_auc = roc_auc_score(construct_idn_gold_flat, construct_sim_flat)
     return fpr, tpr, roc_auc
+
+
+def test_e():
+    variable_ids = [1, 2, 4, 9]
+    construct_similarity = pd.DataFrame([[0.00000000e+00, 8.59243068e-01, 8.90522750e-01, 2.30422117e-16],
+                                         [0.00000000e+00, 0.00000000e+00, 1.81708876e-01, -5.31647944e-18],
+                                         [0.00000000e+00, 0.00000000e+00, 0.00000000e+00, -1.50979114e-17],
+                                         [0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00]],
+                                        index=variable_ids, columns=variable_ids)
+    construct_identity_gold = pd.DataFrame([[1, 1, 1, 0],
+                                            [1, 1, 1, 1],
+                                            [1, 1, 1, 0],
+                                            [0, 1, 0, 1]],
+                                           index=variable_ids, columns=variable_ids)
+    result_1, result_2, result_3 = evaluate(construct_similarity, construct_identity_gold)
+    print(result_1, "\n", result_2, "\n", result_3, "\n")
+    info(result_1)
+    info(result_2)
 
 
 PROTOTYPE = False
@@ -528,6 +534,20 @@ if PARSING:
 else:
     CORPUS_ITEMS = np.asarray(GOLD_ITEMS['Text'])
 del file
+
+# Load the gold standard as matrix DataFrame
+if PROTOTYPE:
+    try:
+        construct_identity_gold = np.loadtxt('construct_identity_gold_prototype.txt')
+    except FileNotFoundError:
+        construct_identity_gold = recreate_construct_identity_gold(POOL_IDS_PROTOTYPE)
+        np.savetxt('construct_identity_gold_prototype.txt', construct_identity_gold)
+else:
+    try:
+        construct_identity_gold = np.loadtxt('construct_identity_gold.txt')
+    except FileNotFoundError:
+        construct_identity_gold = recreate_construct_identity_gold(VARIABLE_IDS)
+        np.savetxt('construct_identity_gold.txt', construct_identity_gold)
 
 # Load Funk's data. For now just the paper abstracts.
 file = r'datasetFunk/FunkPapers.xlsx'
@@ -558,9 +578,9 @@ construct_similarity_glove = aggregate_construct_similarity(item_similarity=item
 print("Construct similarity matrix computed with GloVe.\n")
 
 # Evaluate models
-fpr_lsa, tpr_lsa, roc_auc_lsa = evaluate(construct_similarity_lsa)
+fpr_lsa, tpr_lsa, roc_auc_lsa = evaluate(construct_similarity_lsa, construct_identity_gold)
 print("ROC AUC LSA =", roc_auc_lsa)
-fpr_glove, tpr_glove, roc_auc_glove = evaluate(construct_similarity_glove)
+fpr_glove, tpr_glove, roc_auc_glove = evaluate(construct_similarity_glove, construct_identity_gold)
 print("ROC AUC GloVe =", roc_auc_glove)
 
 # Plot ROC curves
