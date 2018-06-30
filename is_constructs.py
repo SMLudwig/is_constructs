@@ -171,7 +171,7 @@ def test_pt():
     info(result_2)
 
 
-def create_dt_matrix(corpus, processing='count'):
+def document_term_cooccurrence(corpus, processing='count'):
     """Creates and returns document-term matrix DataFrame with the specified processing method.
     Also returns the feature names (terms) extracted by the vectorizer. Available processing methods are
     'count', 'l2', 'tfidf_l2' and 'log_l2'."""
@@ -209,18 +209,55 @@ def create_dt_matrix(corpus, processing='count'):
     assert False, "chosen processing method not implemented."
 
 
-def test_cdtm():
+def test_dtc():
     # Using parsed test corpus.
     corpus = np.asarray(['it technolog advanc situat',
                          "mari don't like situat",
                          'technolog great',
                          'yes sir sir that question'])
     processing = 'log_l2'
-    result_1, result_2 = create_dt_matrix(corpus, processing=processing)
+    result_1, result_2 = document_term_cooccurrence(corpus, processing=processing)
     print(result_1, "\n", np.asarray(result_1), "\n", result_2, "\n")
     print(np.linalg.norm(np.asarray(result_1), axis=1))
     info(result_1)
     info(result_2)
+
+
+def term_term_cooccurrence(corpus, processing='count'):
+    """Creates sparse term-term cooccurrence dictionary from passed corpus. At this point only simple count is
+    available for processing."""
+    # Implementation checked 30 June.
+    # Index terms in corpus, both as index -> term and as term -> index to translate in both directions.
+    s = ' '
+    terms = np.unique(s.join(corpus).split())
+    dict_ix_term = {i: terms[i] for i in range(len(terms))}
+    dict_term_ix = {v: k for k, v in dict_ix_term.items()}
+    # Translate corpus to indices.
+    corpus = np.asarray([[dict_term_ix[term] for term in corpus[i].split()] for i in range(len(corpus))])
+    # Build the sparse term co-occurrence dictionary.
+    cooccurrences = {i: {} for i in range(len(terms))}
+    for paragraph in corpus:
+        for index_center_term in range(len(paragraph)):
+            for window_term in paragraph[:index_center_term] + paragraph[index_center_term + 1:]:
+                try:
+                    cooccurrences[paragraph[index_center_term]][window_term] += 1
+                except KeyError:
+                    cooccurrences[paragraph[index_center_term]][window_term] = 1
+    if processing == 'count':
+        return cooccurrences, dict_term_ix, dict_ix_term
+
+
+def test_ttc():
+    corpus = np.asarray(['it technolog advanc situat',
+                         "mari don't like situat",
+                         'technolog great',
+                         'yes sir sir that question'])
+    processing = 'count'
+    result_1, result_2, result_3 = term_term_cooccurrence(corpus, processing=processing)
+    print(result_1, "\n", result_2, "\n", result_3, "\n")
+    info(result_1)
+    info(result_2)
+    info(result_3)
 
 
 def term_vectors_from_dict(vector_dict, target_terms, normalize=True, verbose=False):
@@ -351,33 +388,8 @@ def test_ltvg():
     info(result)
 
 
-def train_vectors_glove(corpus, n_components=300, verbose=False):
-    # TODO: doc-string
-    # Index terms in corpus, both as index -> term and as term -> index to translate in both directions.
-    s = ' '
-    terms = np.unique(s.join(corpus).split())
-    dict_i_term = {i: terms[i] for i in range(len(terms))}
-    dict_term_i = {v: k for k, v in dict_i_term.items()}
-    # Translate corpus to indices.
-    corpus = np.asarray([[dict_term_i[term] for term in corpus[i].split()] for i in range(len(corpus))])
-    # Build the sparse term co-occurrence dictionary.
-    co_occurrences = {i: {} for i in range(len(terms))}
-    for paragraph in corpus:
-        for index_center_term in range(len(paragraph)):
-            for window_term in paragraph[:index_center_term] + paragraph[index_center_term + 1:]:
-                try:
-                    co_occurrences[paragraph[index_center_term]][window_term] += 1
-                except KeyError:
-                    co_occurrences[paragraph[index_center_term]][window_term] = 1
-
-
-
 
 def test_tvg():
-    corpus = np.asarray(['it technolog advanc situat',
-                         "mari don't like situat",
-                         'technolog great',
-                         'yes sir sir that question'])
     n_components = 300
 
 
@@ -585,7 +597,7 @@ corpus_items = parse_text(np.asarray(gold_items['Text']), stemmer=stemmer, lower
 
 # Create document-term matrices.
 print("Creating document-term matrices (docs x terms)...")
-dtm_items, terms_items = create_dt_matrix(corpus_items, processing=dtm_processing)
+dtm_items, terms_items = document_term_cooccurrence(corpus_items, processing=dtm_processing)
 # dtm_abstracts, terms_abstracts = create_dt_matrix(corpus_abstracts, processing=dtm_processing)
 
 # Compute construct similarity matrix with LSA.
