@@ -9,9 +9,13 @@ from sklearn.metrics import roc_auc_score
 from stemming.porter2 import stem as stem_porter2
 from stemming.paicehusk import stem as stem_paicehusk
 
+from collections import OrderedDict
+
 import numpy as np
 import pandas as pd
+import glove
 import csv
+import json
 import matplotlib.pyplot as plt
 
 
@@ -347,6 +351,36 @@ def test_ltvg():
     info(result)
 
 
+def train_vectors_glove(corpus, n_components=300, verbose=False):
+    # TODO: doc-string
+    # Index terms in corpus, both as index -> term and as term -> index to translate in both directions.
+    s = ' '
+    terms = np.unique(s.join(corpus).split())
+    dict_i_term = {i: terms[i] for i in range(len(terms))}
+    dict_term_i = {v: k for k, v in dict_i_term.items()}
+    # Translate corpus to indices.
+    corpus = np.asarray([[dict_term_i[term] for term in corpus[i].split()] for i in range(len(corpus))])
+    # Build the sparse term co-occurrence dictionary.
+    co_occurrences = {i: {} for i in range(len(terms))}
+    for paragraph in corpus:
+        for index_center_term in range(len(paragraph)):
+            for window_term in paragraph[:index_center_term] + paragraph[index_center_term + 1:]:
+                try:
+                    co_occurrences[paragraph[index_center_term]][window_term] += 1
+                except KeyError:
+                    co_occurrences[paragraph[index_center_term]][window_term] = 1
+
+
+
+
+def test_tvg():
+    corpus = np.asarray(['it technolog advanc situat',
+                         "mari don't like situat",
+                         'technolog great',
+                         'yes sir sir that question'])
+    n_components = 300
+
+
 def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose=False):
     """Computes item similarities from terms in vector space. To aggregate term cosine similarity to item
     similarity, the average similarity of the two most similar terms between each item pair is taken. This is
@@ -462,7 +496,7 @@ def aggregate_construct_similarity(item_similarity, gold_items, variable_ids, n_
             sim_avg = np.average(np.sort(item_sim_sub, axis=None)[-np.max([n_similarities, 2]):])
             construct_similarity[ind_1, ind_2] = sim_avg
             ctr += 1
-            if verbose and ctr % 4000 == 0:
+            if verbose and ctr % 5000 == 0:
                 print("Aggregating item to construct similarity...", ctr / n_fields * 100, "%", end='\r')
     construct_similarity = pd.DataFrame(construct_similarity, index=variable_ids, columns=variable_ids)
     return construct_similarity
