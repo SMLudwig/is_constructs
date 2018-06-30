@@ -237,9 +237,9 @@ def term_term_cooccurrence(dt_matrix):
         for k in terms_ix:
             if tt_matrix[i][k] != 0:
                 try:
-                    tt_dict[i][k] += tt_matrix[i][k]
+                    tt_dict[i][k] += float(tt_matrix[i][k])
                 except KeyError:
-                    tt_dict[i][k] = tt_matrix[i][k]
+                    tt_dict[i][k] = float(tt_matrix[i][k])
     return tt_dict, dict_term_ix, dict_ix_term
 
 
@@ -387,12 +387,48 @@ def test_ltvg():
     info(result)
 
 
-def train_vectors_glove():
-    pass
+def train_vectors_glove(tt_dict, n_components=300, alpha=0.75, x_max=100.0, step_size=0.05, n_epochs=25,
+                        batch_size=64, workers=2, verbose=False):
+    """Trains vector dictionary from the passed term-term dictionary with the passed hyperparameters.
+    Glove.init()
+    cooccurrence dict<int, dict<int, float>> : the co-occurence matrix
+    alpha float : (default 0.75) hyperparameter for controlling the exponent for normalized co-occurrence counts.
+    x_max float : (default 100.0) hyperparameter for controlling smoothing for common items in co-occurrence matrix.
+    d int : (default 50) how many embedding dimensions for learnt vectors
+    seed int : (default 1234) the random seed
+    Glove.train()
+    step_size float : the learning rate for the model
+    n_epochs int : the number of iterations over the full dataset
+    workers int : number of worker threads used for training
+    batch_size int : how many examples should each thread receive (controls the size of the job queue)"""
+    # Implementation checked 30 June.
+    model = glove.Glove(tt_dict, d=n_components, alpha=alpha, x_max=x_max)
+    for epoch in range(n_epochs):
+        error = model.train(step_size=step_size, batch_size=batch_size, workers=workers)
+        if verbose:
+            print("GloVe training epoch %d, error %.3f" % (epoch + 1, error), flush=True)
+    vector_matrix = model.W
+    vector_dict = {ix: list(vector_matrix[ix]) for ix in tt_dict.keys()}
+    return vector_dict
 
 
 def test_tvg():
-    n_components = 300
+    tt_dict = {0: {0: 1, 2: 1, 5: 1, 6: 1}, 1: {1: 1, 6: 1}, 2: {0: 1, 2: 1, 5: 1, 6: 1},
+               3: {3: 1, 4: 2, 7: 1, 8: 1}, 4: {3: 2, 4: 4, 7: 2, 8: 2}, 5: {0: 1, 2: 1, 5: 1, 6: 1},
+               6: {0: 1, 1: 1, 2: 1, 5: 1, 6: 2}, 7: {3: 1, 4: 2, 7: 1, 8: 1}, 8: {3: 1, 4: 2, 7: 1, 8: 1}}
+    n_components = 4
+    alpha = 0.75
+    x_max = 100.0
+    step_size = 0.05
+    n_epochs = 25
+    batch_size = 1
+    workers = 1
+    verbose = True
+    result = train_vectors_glove(tt_dict, n_components=n_components, alpha=alpha, x_max=x_max,
+                                 step_size=step_size, n_epochs=n_epochs, batch_size=batch_size, workers=workers,
+                                 verbose=verbose)
+    print(result, "\n")
+    info(result)
 
 
 def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose=False):
@@ -601,7 +637,7 @@ corpus_items = parse_text(np.asarray(gold_items['Text']), stemmer=stemmer, lower
 print("Creating document-term matrices (docs x terms)...")
 dtm_items, terms_items = document_term_cooccurrence(corpus_items, processing=dtm_processing)
 # dtm_abstracts, terms_abstracts = create_dt_matrix(corpus_abstracts, processing=dtm_processing)
-ttd_items, dict_term_ix, dict_ix_term = term_term_cooccurrence(corpus_items, processing='l2')
+ttd_items, dict_term_ix, dict_ix_term = term_term_cooccurrence(dtm_items)
 
 # Compute construct similarity matrix with LSA.
 print("Computing construct similarity matrix with LSA...")
