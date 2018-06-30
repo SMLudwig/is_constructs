@@ -22,6 +22,85 @@ def info(var):
         print("Type:", type(var), "\nLength:", len(var))
 
 
+def recreate_construct_identity_gold(gold_standard, pool_ids):
+    """Translates the gold standard by Larsen and Bong 2016 into a binary construct identity matrix."""
+    # Implementation checked 28 June.
+    variable_ids = np.sort(np.unique(gold_standard['VariableID'][gold_standard['Poolid'].isin(pool_ids)]))
+    construct_identity_gold = np.zeros([len(variable_ids), len(variable_ids)])
+    construct_identity_gold = pd.DataFrame(construct_identity_gold, index=variable_ids, columns=variable_ids)
+    for pool_id in pool_ids:
+        pool_var_ids = np.asarray(gold_standard['VariableID'][gold_standard['Poolid'] == pool_id])
+        for ind_1 in range(len(pool_var_ids) - 1):
+            var_id_1 = pool_var_ids[ind_1]
+            for ind_2 in range(ind_1 + 1, len(pool_var_ids)):
+                var_id_2 = pool_var_ids[ind_2]
+                indices = np.sort(np.asarray([var_id_1, var_id_2]))  # necessary to get upper triangular
+                construct_identity_gold[indices[1]][indices[0]] = 1
+    # Mirror the matrix diagonally and fill diagonal with ones.
+    construct_identity_gold = np.add(np.asarray(construct_identity_gold), np.asarray(construct_identity_gold.T))
+    np.fill_diagonal(construct_identity_gold, 1)
+    construct_identity_gold = pd.DataFrame(construct_identity_gold, index=variable_ids, columns=variable_ids)
+    return construct_identity_gold
+
+
+def test_rcig():
+    gold_standard = pd.DataFrame([[1, 1],
+                                  [1, 3],
+                                  [2, 4],
+                                  [2, 7],
+                                  [2, 8]], columns=['Poolid', 'VariableID'])
+    pool_ids = [1, 2]
+    result = recreate_construct_identity_gold(gold_standard, pool_ids)
+    print(result, "\n")
+    info(result)
+
+
+def load_data(prototype=False, verbose=False):
+    """Loads gold_items, pool_ids, variable_ids, construct_identity_gold and funk_papers."""
+    # TODO: unit testing
+    file = r'LarsenBong2016GoldStandard.xls'
+    gold_standard = pd.read_excel(file, sheet_name='GoldStandard')
+    gold_items = pd.read_excel(file, sheet_name='Items')
+    if prototype:
+        try:
+            pool_ids = np.loadtxt('pool_ids_prototype.txt')
+        except FileNotFoundError:
+            if verbose:
+                print("No file with prototype pool-IDs found. Drawing new random sample...")
+            pool_ids = np.sort(np.random.choice(gold_standard['Poolid'].unique(), size=100, replace=False))
+            np.savetxt('pool_ids_prototype.txt', pool_ids)
+        variable_ids = np.sort(np.unique(gold_standard['VariableID'][gold_standard['Poolid'].isin(pool_ids)]))
+    else:
+        pool_ids = np.sort(gold_standard['Poolid'].unique())
+        # variable_ids = sorted(list(set(gold_items['VariableId'])))
+        variable_ids = np.sort(gold_items['VariableId'].unique())
+    gold_items = gold_items.loc[gold_items['VariableId'].isin(variable_ids)]
+
+    # Load the gold standard as matrix DataFrame
+    if prototype:
+        try:
+            construct_identity_gold = np.loadtxt('construct_identity_gold_prototype.txt')
+        except FileNotFoundError:
+            if verbose:
+                print("No construct identity gold matrix file found. Creating new file...")
+            construct_identity_gold = recreate_construct_identity_gold(gold_standard, pool_ids)
+            np.savetxt('construct_identity_gold_prototype.txt', construct_identity_gold)
+    else:
+        try:
+            construct_identity_gold = np.loadtxt('construct_identity_gold.txt')
+        except FileNotFoundError:
+            if verbose:
+                print("No construct identity gold matrix file found. Creating new file...")
+            construct_identity_gold = recreate_construct_identity_gold(gold_standard, pool_ids)
+            np.savetxt('construct_identity_gold.txt', construct_identity_gold)
+
+    # Load Funk's data. For now just the paper abstracts.
+    file = r'datasetFunk/FunkPapers.xlsx'
+    funk_papers = pd.read_excel(file)
+
+    return gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers
+
+
 def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
                return_config=False, ignore_chars='''.,:;"!?-/()[]{}0123456789''', verbose=False):
     """Parses text with options for removing specified characters, removing stop-words, converting to lower-case
@@ -30,6 +109,7 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
     # TODO: still returns empty '' strings. Also returns "'s".
     # Implementation checked 28 June.
     parsed_docs = []
+    error_words = []
     for i in range(len(documents)):
         assert isinstance(documents[i], str), "Document not a string." + str(documents[i])
         if ignore_chars != '':
@@ -51,12 +131,13 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
                         'paicehusk': stem_paicehusk(word) + ' '
                     }.get(stemmer, word + ' ')
                 except ValueError:
-                    if verbose:
-                        print("ValueError occurred when stemming word:", word)
+                    error_words.append(word)
                     parsed_docs[i] += word + ' '
             else:
                 parsed_docs[i] += word + ' '
         parsed_docs[i] = parsed_docs[i].strip()  # remove excess white space
+    if verbose and error_words:
+        print("ValueError occurred when stemming the following words:", list(set(error_words)))
     parsed_docs = list(filter(None, parsed_docs))
     parsed_docs = np.asarray(parsed_docs)
     parser_config = {'stemmer': stemmer, 'lower': lower, 'remove_stop_words': remove_stop_words,
@@ -91,7 +172,7 @@ def create_dt_matrix(corpus, processing='count'):
     Also returns the feature names (terms) extracted by the vectorizer. Available processing methods are
     'count', 'l2', 'tfidf_l2' and 'log_l2'."""
     # Implementation checked superficially 28 June.
-    count_vectorizer = CountVectorizer(stop_words=None, lowercase=True, dtype='int32')
+    count_vectorizer = CountVectorizer(stop_words=None, lowercase=False, dtype='int32')
     dt_matrix = count_vectorizer.fit_transform(corpus)
     dt_matrix = dt_matrix.toarray()
     terms = count_vectorizer.get_feature_names()
@@ -101,7 +182,7 @@ def create_dt_matrix(corpus, processing='count'):
         dt_matrix_l2 = Normalizer(copy=True, norm='l2').fit_transform(dt_matrix)
         return pd.DataFrame(dt_matrix_l2, index=corpus, columns=terms), terms
     if processing == 'tfidf_l2':
-        tfidf_vectorizer = TfidfVectorizer(stop_words=None, lowercase=True, norm='l2', use_idf=True, smooth_idf=True)
+        tfidf_vectorizer = TfidfVectorizer(stop_words=None, lowercase=False, norm='l2', use_idf=True, smooth_idf=True)
         dt_matrix_tfidf_l2 = tfidf_vectorizer.fit_transform(corpus)
         dt_matrix_tfidf_l2 = dt_matrix_tfidf_l2.toarray()
         return pd.DataFrame(dt_matrix_tfidf_l2, index=corpus, columns=terms), terms
@@ -136,40 +217,6 @@ def test_cdtm():
     print(np.linalg.norm(np.asarray(result_1), axis=1))
     info(result_1)
     info(result_2)
-
-
-def recreate_construct_identity_gold(gold_standard, pool_ids):
-    """Translates the gold standard by Larsen and Bong 2016 into a binary construct identity matrix."""
-    # Implementation checked 28 June.
-    variable_ids = np.sort(np.unique(gold_standard['VariableID'][gold_standard['Poolid'].isin(pool_ids)]))
-    construct_identity_gold = np.zeros([len(variable_ids), len(variable_ids)])
-    construct_identity_gold = pd.DataFrame(construct_identity_gold, index=variable_ids, columns=variable_ids)
-    for pool_id in pool_ids:
-        pool_var_ids = np.asarray(gold_standard['VariableID'][gold_standard['Poolid'] == pool_id])
-        for ind_1 in range(len(pool_var_ids) - 1):
-            var_id_1 = pool_var_ids[ind_1]
-            for ind_2 in range(ind_1 + 1, len(pool_var_ids)):
-                var_id_2 = pool_var_ids[ind_2]
-                indices = np.sort(np.asarray([var_id_1, var_id_2]))  # necessary to get upper triangular
-                construct_identity_gold[indices[1]][indices[0]] = 1
-    # Mirror the matrix diagonally and fill diagonal with ones.
-    construct_identity_gold = np.add(np.asarray(construct_identity_gold), np.asarray(construct_identity_gold.T))
-    np.fill_diagonal(construct_identity_gold, 1)
-    construct_identity_gold = pd.DataFrame(construct_identity_gold)
-    print("Reconstructed construct identity matrix from gold standard.\n")
-    return construct_identity_gold
-
-
-def test_rcig():
-    gold_standard = pd.DataFrame([[1, 1],
-                                  [1, 2],
-                                  [2, 3],
-                                  [2, 4],
-                                  [2, 5]], columns=['Poolid', 'VariableID'])
-    pool_ids = [1, 2]
-    result = recreate_construct_identity_gold(gold_standard, pool_ids)
-    print(result, "\n")
-    info(result)
 
 
 def term_vectors_from_dict(vector_dict, target_terms, normalize=True, verbose=False):
@@ -209,7 +256,7 @@ def test_tvfd():
     info(result)
 
 
-def train_term_vectors_lsa(dt_matrix, n_components=300, return_doc_vectors=False):
+def train_vectors_lsa(dt_matrix, n_components=300, return_doc_vectors=False):
     """Train term and item vectors with SVD a.k.a. LSA."""
     # Implementation checked 28 June.
     assert len(dt_matrix) >= n_components, "Number of training documents has to be >= number of components."
@@ -241,8 +288,8 @@ def test_ttvlsa():
     dt_matrix = pd.DataFrame(dt_matrix, index=documents, columns=terms)
     n_components = 4
     return_doc_vectors = True
-    result_1, result_2 = train_term_vectors_lsa(dt_matrix, n_components=n_components,
-                                                return_doc_vectors=return_doc_vectors)
+    result_1, result_2 = train_vectors_lsa(dt_matrix, n_components=n_components,
+                                           return_doc_vectors=return_doc_vectors)
     print(result_1, "\n", result_2, "\n")
     info(result_1)
     info(result_2)
@@ -256,10 +303,12 @@ def load_term_vectors_glove(file_name, target_terms, parser_config=None, new_red
     if not new_reduce_dict:
         vector_dict = np.load(file_name).item()
     else:
+        print("Creating GloVe vector-dictionary of relevant terms from full vector file...")
         # Load full pre-trained GloVe vector dictionary and extract relevant term vectors.
         with open(file_name, 'r') as file:
             vectors_full = pd.read_table(file, sep=' ', index_col=0, header=None, quoting=csv.QUOTE_NONE)
-        print("Full GloVe vector file loaded as Pandas DataFrame.")
+        if verbose:
+            print("Full GloVe vector file loaded as Pandas DataFrame.")
         # Parse keys of the GloVe vectors with the same parser configuration used on the corpus.
         vectors_full.index = pd.Series(vectors_full.index).replace(np.nan, 'nan')
         # TODO: parsing keys results in multiple vectors being returned for the same term
@@ -277,7 +326,7 @@ def load_term_vectors_glove(file_name, target_terms, parser_config=None, new_red
                 continue  # deal with out of vocabulary words in term_vectors_from_dict(...)
             ctr += 1
             if verbose and ctr % 200 == 0:
-                print("Creating GloVe vector dictionary of relevant terms.", ctr / len(target_terms) * 100, "%",
+                print("Creating GloVe vector dictionary of relevant terms...", ctr / len(target_terms) * 100, "%",
                       end="\r")
         np.save(file_name[:-4] + '_reduced.npy', vector_dict)
     return vector_dict
@@ -298,39 +347,6 @@ def test_ltvg():
     info(result)
 
 
-def items_vector_average_glove(dtm_identifier, vector_dict, denominator=None):
-    # TODO: completely out of date
-    """Translate items into pre-trained GloVe vector space and returns the matrix of item vectors. Sums term
-    vectors of terms in item with passed document-term matrix as weighting factor and divides vector according
-    to passed denominator mode."""
-    # Translate items into GloVe vectors.
-    # Implementation checked manually, but there are multiple ways of doing this.
-    dt_matrix = dtm_items[dtm_identifier]
-    item_vectors = np.zeros([len(dt_matrix), len(next(iter(vector_dict.values())))])
-    for row_ind in range(len(dt_matrix)):
-        ctr_oov = 0
-        value_oov = 0
-        for col_ind in range(len(dt_matrix[0])):
-            if np.nonzero(dt_matrix[row_ind, col_ind]):
-                try:
-                    item_vectors[row_ind] = np.add(item_vectors[row_ind],
-                                                   np.asarray(vector_dict[TERMS_ITEMS[col_ind]])
-                                                   * dt_matrix[row_ind, col_ind])
-                except KeyError:
-                    ctr_oov += 1
-                    value_oov += dt_matrix[row_ind, col_ind]
-        # TODO: Some error, probably created in the following lines. Test this part of the function.
-        item_vectors[row_ind] = {
-            'sum': item_vectors[row_ind] / (np.sum(dt_matrix[row_ind])),
-            'sum_value-oov': item_vectors[row_ind] / (np.sum(dt_matrix[row_ind]) - value_oov),
-            'norm': item_vectors[row_ind] / (np.linalg.norm(dt_matrix[row_ind])),
-            'norm_value-oov': item_vectors[row_ind] / (np.linalg.norm(dt_matrix[row_ind]) - value_oov)
-        }.get(denominator, item_vectors[row_ind])
-        if row_ind % 250 == 0:
-            print("Translating items into GloVe vectors.", (row_ind + 1) / len(dt_matrix) * 100, "%", end="\r")
-    return item_vectors
-
-
 def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose=False):
     """Computes item similarities from terms in vector space. To aggregate term cosine similarity to item
     similarity, the average similarity of the two most similar terms between each item pair is taken. This is
@@ -339,8 +355,9 @@ def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose
     # Implementation checked 28 June.
     # Compute cosine term similarity as matrix.
     term_similarity = np.asarray(np.asmatrix(term_vectors) * np.asmatrix(term_vectors).T)
-    print("Cosine similarity of terms computed. Number unique term pairs =",
-          np.count_nonzero(np.triu(term_similarity, 1)))
+    if verbose:
+        print("Cosine similarity of terms computed. Number unique term pairs =",
+              np.count_nonzero(np.triu(term_similarity, 1)))
 
     # Aggregate item similarity from term similarities.
     items = dt_matrix.index.values
@@ -372,10 +389,11 @@ def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose
                     ctr_none += 1
             item_similarity[ind_1, ind_2] = sim_avg
             ctr += 1
-            if verbose and ctr % 40000 == 0:
-                print("Aggregating term to item similarity.", ctr / n_fields * 100, "%", end='\r')
-    print("Number of item-relationships with only one non-zero term similarity:", ctr_one)
-    print("Number of item-relationships with no non-zero term similarity:", ctr_none, '\n')
+            if verbose and ctr % 60000 == 0:
+                print("Aggregating term to item similarity...", ctr / n_fields * 100, "%", end='\r')
+    if verbose:
+        print("Number of item-relationships with only one non-zero term similarity due to OOV:", ctr_one)
+        print("Number of item-relationships with no non-zero term similarity due to OOV:", ctr_none)
     # Mirror lower triangular and fill diagonal of the matrix.
     item_similarity = np.add(item_similarity, item_similarity.T)
     np.fill_diagonal(item_similarity, 1)
@@ -435,7 +453,6 @@ def aggregate_construct_similarity(item_similarity, gold_items, variable_ids, n_
             # Get item similarities between the constructs.
             item_indices_1 = np.where(gold_items['VariableId'] == variable_ids[ind_1])[0]
             item_indices_2 = np.where(gold_items['VariableId'] == variable_ids[ind_2])[0]
-            print("Item_indices:", item_indices_1, item_indices_2)
             # Combine item-indices so they fill the upper triangular of the construct similarity matrix.
             item_indices_all = []
             for i1 in item_indices_1:
@@ -446,7 +463,7 @@ def aggregate_construct_similarity(item_similarity, gold_items, variable_ids, n_
             construct_similarity[ind_1, ind_2] = sim_avg
             ctr += 1
             if verbose and ctr % 4000 == 0:
-                print("Aggregating item to construct similarity.", ctr / n_fields * 100, "%", end='\r')
+                print("Aggregating item to construct similarity...", ctr / n_fields * 100, "%", end='\r')
     construct_similarity = pd.DataFrame(construct_similarity, index=variable_ids, columns=variable_ids)
     return construct_similarity
 
@@ -478,7 +495,6 @@ def evaluate(construct_similarity, construct_identity_gold):
     """Evaluates construct similarity matrix against the Larsen and Bong 2016 gold standard in matrix form."""
     # TODO: adjust to change in method recreate_construct_identity_gold(...)
     # Implementation checked 30 June.
-    print("Evaluating performance.")
     # Unwrap upper triangular of similarity and identity matrix, excluding diagonal.
     # Calculate Receiver Operating Characteristic (ROC) curve.
     construct_similarity = np.asarray(construct_similarity)
@@ -512,78 +528,62 @@ def test_e():
     info(result_2)
 
 
-PROTOTYPE = False
-PARSING = False
+# Define central parameters.
+prototype = True
+stemmer = 'porter2'
+ignore_chars = '''.,:;"!?-/()[]{}0123456789'''
+dtm_processing = 'tfidf_l2'
+use_doc_vectors_lsa = False
 
-# Load gold standard data.
-file = r'LarsenBong2016GoldStandard.xls'
-GOLD_STANDARD = pd.read_excel(file, sheet_name='GoldStandard')
-GOLD_ITEMS = pd.read_excel(file, sheet_name='Items')
-if PROTOTYPE:
-    try:
-        POOL_IDS_PROTOTYPE = np.loadtxt('pool_ids_prototype.txt')
-    except FileNotFoundError:
-        POOL_IDS_PROTOTYPE = np.sort(np.random.choice(GOLD_STANDARD['Poolid'].unique(), size=100, replace=False))
-        np.savetxt('pool_ids_prototype.txt', POOL_IDS_PROTOTYPE)
-    VARIABLE_IDS = np.sort(np.unique(GOLD_STANDARD['VariableID'][GOLD_STANDARD['Poolid'].isin(POOL_IDS_PROTOTYPE)]))
-else:
-    VARIABLE_IDS = sorted(list(set(GOLD_ITEMS['VariableId'])))
-GOLD_ITEMS = GOLD_ITEMS.loc[GOLD_ITEMS['VariableId'].isin(VARIABLE_IDS)]
-if PARSING:
-    CORPUS_ITEMS = parse_text(np.asarray(GOLD_ITEMS['Text']), stemmer='porter2')
-else:
-    CORPUS_ITEMS = np.asarray(GOLD_ITEMS['Text'])
-del file
+# Load data.
+print("Loading data...")
+gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers = load_data(prototype=prototype,
+                                                                                     verbose=True)
 
-# Load the gold standard as matrix DataFrame
-if PROTOTYPE:
-    try:
-        construct_identity_gold = np.loadtxt('construct_identity_gold_prototype.txt')
-    except FileNotFoundError:
-        construct_identity_gold = recreate_construct_identity_gold(POOL_IDS_PROTOTYPE)
-        np.savetxt('construct_identity_gold_prototype.txt', construct_identity_gold)
-else:
-    try:
-        construct_identity_gold = np.loadtxt('construct_identity_gold.txt')
-    except FileNotFoundError:
-        construct_identity_gold = recreate_construct_identity_gold(VARIABLE_IDS)
-        np.savetxt('construct_identity_gold.txt', construct_identity_gold)
-
-# Load Funk's data. For now just the paper abstracts.
-file = r'datasetFunk/FunkPapers.xlsx'
-funk_papers = pd.read_excel(file)
-corpus_abstracts = parse_text(np.asarray(funk_papers['Abstract']), stemmer='porter2')
-del file
+# Parse texts.
+print("Parsing texts...")
+corpus_items = parse_text(np.asarray(gold_items['Text']), stemmer=stemmer, lower=True,
+                          remove_stop_words=True, return_config=False,
+                          ignore_chars=ignore_chars, verbose=True)
+# corpus_abstracts = parse_text(np.asarray(funk_papers['Abstract']), stemmer=stemmer, lower=True,
+#                               remove_stop_words=True, return_config=False,
+#                               ignore_chars=ignore_chars, verbose=True)
 
 # Create document-term matrices.
-dtm_items, TERMS_ITEMS = create_dt_matrix(CORPUS_ITEMS, processing='count')
-dtm_train, terms_train = create_dt_matrix(corpus_abstracts, processing='count')
-print("Document-term matrices prepared (docs x terms).\n")
+print("Creating document-term matrices (docs x terms)...")
+dtm_items, terms_items = create_dt_matrix(corpus_items, processing=dtm_processing)
+# dtm_abstracts, terms_abstracts = create_dt_matrix(corpus_abstracts, processing=dtm_processing)
 
-# Compute construct similarity matrix for LSA
-print("Creating construct similarity matrix with LSA.")
-term_vectors_lsa = term_vectors_from_dict(train_term_vectors_lsa(dtm_items),
-                                          target_terms=TERMS_ITEMS)
-item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2)
-construct_similarity_lsa = aggregate_construct_similarity(item_similarity=item_similarity_lsa, n_similarities=2)
-print("Construct similarity matrix computed with LSA.\n")
+# Compute construct similarity matrix with LSA.
+print("Computing construct similarity matrix with LSA...")
+vector_dict_lsa, item_vectors_lsa = train_vectors_lsa(dtm_items, n_components=300, return_doc_vectors=True)
+if use_doc_vectors_lsa:
+    item_similarity_lsa = pd.DataFrame(np.asmatrix(item_vectors_lsa) * np.asmatrix(item_vectors_lsa).T,
+                                       index=gold_items, columns=gold_items)
+else:
+    term_vectors_lsa = term_vectors_from_dict(vector_dict_lsa, terms_items, normalize=True, verbose=True)
+    item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2, verbose=True)
+construct_similarity_lsa = aggregate_construct_similarity(item_similarity_lsa, gold_items, variable_ids,
+                                                          n_similarities=2, verbose=True)
 
-# Compute construct similarity matrix for GloVe
-print("Creating construct similarity matrix with GloVe.")
-term_vectors_glove = load_term_vectors_glove(file_name='glove-pre-trained/glove.6B.300d.txt',
-                                             target_terms=TERMS_ITEMS, new_reduce_dict=True, verbose=True)
-item_similarity_glove = aggregate_item_similarity(dtm_items, term_vectors_glove,
-                                                  n_similarities=2)
-construct_similarity_glove = aggregate_construct_similarity(item_similarity=item_similarity_glove, n_similarities=2)
-print("Construct similarity matrix computed with GloVe.\n")
+# Compute construct similarity matrix with pre-trained GloVe.
+print("Computing construct similarity matrix with GloVe...")
+vector_dict_glove = load_term_vectors_glove(file_name='glove-pre-trained/glove.6B.300d.txt',
+                                            target_terms=terms_items, parser_config=None,
+                                            new_reduce_dict=True, verbose=True)
+term_vectors_glove = term_vectors_from_dict(vector_dict_glove, terms_items, normalize=True, verbose=True)
+item_similarity_glove = aggregate_item_similarity(dtm_items, term_vectors_glove, n_similarities=2, verbose=True)
+construct_similarity_glove = aggregate_construct_similarity(item_similarity_glove, gold_items, variable_ids,
+                                                            n_similarities=2, verbose=True)
 
-# Evaluate models
+# Evaluate models.
+print("Evaluating performance...")
 fpr_lsa, tpr_lsa, roc_auc_lsa = evaluate(construct_similarity_lsa, construct_identity_gold)
 print("ROC AUC LSA =", roc_auc_lsa)
 fpr_glove, tpr_glove, roc_auc_glove = evaluate(construct_similarity_glove, construct_identity_gold)
 print("ROC AUC GloVe =", roc_auc_glove)
 
-# Plot ROC curves
+# Plot ROC curves.
 plt.figure()
 plt.grid(True)
 plt.plot(fpr_lsa, tpr_lsa)
@@ -593,19 +593,47 @@ plt.ylabel("True Positive Rate (TPR)")
 plt.legend(["LSA", "GloVe"])
 plt.show()
 
+
 # TODO: -----------------------------------------
 # TODO: ---------------- ARCHIVE ----------------
 
-# Compute cosine similarity of items in the vector space
-item_vectors = 'PARAMETER'
-if item_vectors is not None:
-    item_similarity = np.asarray(np.asmatrix(item_vectors) * np.asmatrix(item_vectors).T)
-    print("Cosine similarity of items computed. Number unique item pairs =",
-          np.count_nonzero(np.triu(item_similarity, 1)))
+
+def items_vector_average_glove(dtm_identifier, vector_dict, denominator=None):
+    # TODO: completely out of date
+    """Translate items into pre-trained GloVe vector space and returns the matrix of item vectors. Sums term
+    vectors of terms in item with passed document-term matrix as weighting factor and divides vector according
+    to passed denominator mode."""
+    # Translate items into GloVe vectors.
+    # Implementation checked manually, but there are multiple ways of doing this.
+    dt_matrix = dtm_items[dtm_identifier]
+    item_vectors = np.zeros([len(dt_matrix), len(next(iter(vector_dict.values())))])
+    for row_ind in range(len(dt_matrix)):
+        ctr_oov = 0
+        value_oov = 0
+        for col_ind in range(len(dt_matrix[0])):
+            if np.nonzero(dt_matrix[row_ind, col_ind]):
+                try:
+                    item_vectors[row_ind] = np.add(item_vectors[row_ind],
+                                                   np.asarray(vector_dict[terms_items[col_ind]])
+                                                   * dt_matrix[row_ind, col_ind])
+                except KeyError:
+                    ctr_oov += 1
+                    value_oov += dt_matrix[row_ind, col_ind]
+        # TODO: Some error, probably created in the following lines. Test this part of the function.
+        item_vectors[row_ind] = {
+            'sum': item_vectors[row_ind] / (np.sum(dt_matrix[row_ind])),
+            'sum_value-oov': item_vectors[row_ind] / (np.sum(dt_matrix[row_ind]) - value_oov),
+            'norm': item_vectors[row_ind] / (np.linalg.norm(dt_matrix[row_ind])),
+            'norm_value-oov': item_vectors[row_ind] / (np.linalg.norm(dt_matrix[row_ind]) - value_oov)
+        }.get(denominator, item_vectors[row_ind])
+        if row_ind % 250 == 0:
+            print("Translating items into GloVe vectors.", (row_ind + 1) / len(dt_matrix) * 100, "%", end="\r")
+    return item_vectors
+
 
 # Convert similarity matrices to Pandas data frames with labelling.
-construct_similarity_lsa = pd.DataFrame(construct_similarity_lsa, index=VARIABLE_IDS, columns=VARIABLE_IDS)
-construct_similarity_glove = pd.DataFrame(construct_similarity_glove, index=VARIABLE_IDS, columns=VARIABLE_IDS)
+construct_similarity_lsa = pd.DataFrame(construct_similarity_lsa, index=variable_ids, columns=variable_ids)
+construct_similarity_glove = pd.DataFrame(construct_similarity_glove, index=variable_ids, columns=variable_ids)
 
 # NOTES: Load the results from 'GloVe_search_results.npy'. Best results around 0.63.
 # Parameter search for GloVe document projection by weighted item vectors.
@@ -618,11 +646,11 @@ ctr = 0
 print("Performing grid search on GloVe.")
 for dtm_identifier, denominator in grid:
     item_vectors = items_vector_average_glove(dtm_identifier, denominator=denominator)
-    construct_similarity_glove = np.nan_to_num(aggregate_construct_similarity(item_vectors))
-    fpr_glove, tpr_glove, roc_auc_glove = evaluate(construct_similarity_glove)
-    glove_results.append([dtm_identifier, denominator, roc_auc_glove])
-    ctr += 1
-    print("New GloVe search result:", dtm_identifier, denominator, roc_auc_glove)
-    print("Grid search on GloVe.", ctr / len(grid) * 100, "%\n")
+construct_similarity_glove = np.nan_to_num(aggregate_construct_similarity(item_vectors))
+fpr_glove, tpr_glove, roc_auc_glove = evaluate(construct_similarity_glove)
+glove_results.append([dtm_identifier, denominator, roc_auc_glove])
+ctr += 1
+print("New GloVe search result:", dtm_identifier, denominator, roc_auc_glove)
+print("Grid search on GloVe.", ctr / len(grid) * 100, "%\n")
 np.save('GloVe_search_results.npy', np.asarray(glove_results))
 glove_results = np.load('GloVe_search_results.npy')
