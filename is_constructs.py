@@ -11,6 +11,7 @@ from stemming.paicehusk import stem as stem_paicehusk
 
 import numpy as np
 import pandas as pd
+import editdistance
 import glove
 import csv
 import matplotlib.pyplot as plt
@@ -58,7 +59,6 @@ def test_rcig():
 
 def load_data(prototype=False, verbose=False):
     """Loads gold_items, pool_ids, variable_ids, construct_identity_gold and funk_papers."""
-    # TODO: unit testing
     file = r'LarsenBong2016GoldStandard.xls'
     gold_standard = pd.read_excel(file, sheet_name='GoldStandard')
     gold_items = pd.read_excel(file, sheet_name='Items')
@@ -95,11 +95,42 @@ def load_data(prototype=False, verbose=False):
             construct_identity_gold = recreate_construct_identity_gold(gold_standard, pool_ids)
             np.savetxt('construct_identity_gold.txt', construct_identity_gold)
 
-    # Load Funk's data. For now just the paper abstracts.
+    # Load Funk's data on papers and constructs.
     file = r'datasetFunk/FunkPapers.xlsx'
     funk_papers = pd.read_excel(file)
+    file = r'datasetFunk/FunkConstructs.xlsx'
+    funk_constructs = pd.read_excel(file)
 
-    return gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers
+    # Calculate construct distances between Larsen's and Funk's datasets. Remove white space around names.
+    gold_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(gold_items['VariableName'])]))
+    funk_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(funk_constructs['ConstructName'])]))
+    construct_distances = pd.DataFrame(np.zeros([len(gold_construct_names), len(funk_construct_names)]),
+                                       index=gold_construct_names, columns=funk_construct_names)
+    ctr = 0
+    for gold_con in gold_construct_names:
+        for funk_con in funk_construct_names:
+            construct_distances[funk_con][gold_con] = editdistance.eval(gold_con, funk_con)
+        ctr += 1
+        if verbose and ctr % 50 == 0:
+            print("Relating gold constructs to Funk's constructs:", ctr / len(gold_construct_names) * 100, "%",
+                  flush=True)
+
+    # Create construct ID translation dictionary between Larsen' and Funk's dataset. Simply uses the first match.
+    # TODO: implement ID to ID dictionary. might change construct_distances indices and columns.
+    # TODO: deal with multiple matches.
+
+    # Get authors of the constructs in Funk's dataset.
+    construct_authors = {}
+    construct_ids = np.unique(funk_constructs['ConstructID'])
+    for construct_id in construct_ids:
+        # Get PaperID related to a specific ConstructID
+        paper_id = funk_constructs.loc[funk_constructs['ConstructID'].isin([construct_id])]['PaperID']
+        # Get Author of specific PaperID
+        authors = funk_papers.loc[funk_papers['PaperID'].isin([paper_id])]['Author']
+        construct_authors[construct_id] = np.asarray(authors)[0]
+
+    return gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers, funk_constructs, \
+           construct_authors, construct_distances
 
 
 def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
@@ -390,7 +421,7 @@ def test_ltvg():
     info(result)
 
 
-def train_vectors_glove(tt_dict, n_components=300, alpha=0.75, x_max=100.0, step_size=0.75, n_epochs=50,
+def train_vectors_glove(tt_dict, n_components=300, alpha=0.75, x_max=100.0, step_size=0.05, n_epochs=25,
                         batch_size=64, workers=2, verbose=False):
     """Trains vector dictionary from the passed term-term dictionary with the passed hyperparameters.
     Glove.init()
@@ -424,8 +455,8 @@ def test_tvg():
     n_components = 4
     alpha = 0.75
     x_max = 100.0
-    step_size = 0.75
-    n_epochs = 50
+    step_size = 0.05
+    n_epochs = 25
     batch_size = 1
     workers = 1
     verbose = True
@@ -626,8 +657,8 @@ use_doc_vectors_lsa = False
 
 # Load data.
 print("Loading data...")
-gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers = load_data(prototype=prototype,
-                                                                                     verbose=True)
+gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers, funk_constructs, construct_authors, \
+construct_distances = load_data(prototype=prototype, verbose=True)
 
 # Parse texts.
 print("Parsing texts...")
