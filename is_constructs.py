@@ -14,7 +14,6 @@ import pandas as pd
 import editdistance
 import glove
 import csv
-import timeit
 import matplotlib.pyplot as plt
 
 
@@ -121,7 +120,7 @@ def load_data(prototype=False, verbose=False):
                                                             'VariableName'].iloc[0],
                                              funk_constructs.loc[funk_constructs['ConstructID'] == funk_id,
                                                                  'ConstructName'].iloc[0])
-                construct_distances[funk_id][gold_id] = distance    # DataFrames access columns first, then rows.
+                construct_distances[funk_id][gold_id] = distance  # DataFrames access columns first, then rows.
             ctr += 1
             if verbose and ctr % 50 == 0:
                 print("Relating gold constructs to Funk's constructs:", ctr / len(gold_construct_ids) * 100, "%",
@@ -603,27 +602,39 @@ def test_ais():
     info(result)
 
 
-def aggregate_construct_similarity(item_similarity, gold_items, variable_ids, n_similarities=2, verbose=False):
+def aggregate_construct_similarity(constituent_similarity, gold_items, variable_ids, construct_authors=None,
+                                   n_similarities=2, verbose=False):
     """Computes construct similarities from items in vector space. To aggregate item cosine similarity to construct
     similarity, the average similarity of the two most similar items between each construct pair is taken, as
     established by Larsen and Bong 2016. Creates upper triangular with zero diagonal for efficiency."""
-    # Implementation checked 28 June. There might be a problem in the indices to fully fill triu, but seems solved.
-    item_similarity = np.asarray(item_similarity)
+    # Implementation checked 4 July.
+    authors = constituent_similarity.index.values
+    constituent_similarity = np.asarray(constituent_similarity)
     variable_ids = np.sort(variable_ids)
     construct_similarity = np.zeros([len(variable_ids), len(variable_ids)])
     n_fields = (len(construct_similarity) ** 2 - len(construct_similarity)) / 2  # n fields in upper triu for print
     ctr = 0  # counter for print
     for ind_1 in range(len(variable_ids) - 1):  # rows
         for ind_2 in range(ind_1 + 1, len(variable_ids)):  # columns
-            # Implementation checked manually.
-            # Get item similarities between the constructs.
-            item_indices_1 = np.where(gold_items['VariableId'] == variable_ids[ind_1])[0]
-            item_indices_2 = np.where(gold_items['VariableId'] == variable_ids[ind_2])[0]
+            if construct_authors is not None:
+                # Get author similarity indices between constructs.
+                try:
+                    const_ix_1 = np.where(authors == construct_authors[gold2funk[variable_ids[ind_1]]])[0]
+                    const_ix_2 = np.where(authors == construct_authors[gold2funk[variable_ids[ind_2]]])[0]
+                except KeyError:
+                    # TODO: deal with constructs that have unknown authors better
+                    construct_similarity[ind_1, ind_2] = 0
+                    break
+            # Following implementation checked manually.
+            else:
+                # Get item similarity indices between the constructs.
+                const_ix_1 = np.where(gold_items['VariableId'] == variable_ids[ind_1])[0]
+                const_ix_2 = np.where(gold_items['VariableId'] == variable_ids[ind_2])[0]
             # Combine item-indices so they fill the upper triangular of the construct similarity matrix.
             item_indices_all = []
-            for i1 in item_indices_1:
-                item_indices_all += [(i1, i2) for i2 in item_indices_2]
-            item_sim_sub = [item_similarity[i] for i in item_indices_all]
+            for i1 in const_ix_1:
+                item_indices_all += [(i1, i2) for i2 in const_ix_2]
+            item_sim_sub = [constituent_similarity[i] for i in item_indices_all]
             # Compute construct similarity from average of n highest item similarities.
             sim_avg = np.average(np.sort(item_sim_sub, axis=None)[-np.max([n_similarities, 2]):])
             construct_similarity[ind_1, ind_2] = sim_avg
@@ -699,14 +710,14 @@ prototype = True
 stemmer = 'porter2'
 ignore_chars = '''.,:;"!?_-/()[]{}0123456789'''
 dtm_processing = 'tfidf_l2'
-use_doc_vectors_lsa = False
+use_doc_vectors_lsa = True
 
 # Load data.
 print("Loading data...")
 gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers, funk_constructs, construct_authors, \
 construct_distances, funk2gold, gold2funk = load_data(prototype=prototype, verbose=True)
 
-# Parse texts.
+# Process corpus texts.
 print("Parsing texts...")
 corpus_items = parse_text(np.asarray(gold_items['Text']), stemmer=stemmer, lower=True,
                           remove_stop_words=True, return_config=False,
@@ -714,14 +725,20 @@ corpus_items = parse_text(np.asarray(gold_items['Text']), stemmer=stemmer, lower
 # corpus_abstracts = parse_text(np.asarray(funk_papers['Abstract']), stemmer=stemmer, lower=True,
 #                               remove_stop_words=True, return_config=False,
 #                               ignore_chars=ignore_chars, verbose=True)
+corpus_authors = np.asarray(list(construct_authors.values()))
+# authors = parse_text(np.unique(list(construct_authors.values())), stemmer=None, lower=True,
+#                      remove_stop_words=False, return_config=False,
+#                      ignore_chars=ignore_chars, verbose=True)
 
 # Create document-term matrices and term-term dictionary.
 print("Creating document-term matrices (docs x terms)...")
 dtm_items, terms_items = document_term_cooccurrence(corpus_items, processing=dtm_processing)
-# dtm_abstracts, terms_abstracts = create_dt_matrix(corpus_abstracts, processing=dtm_processing)
-ttd_items, dict_term_ix, dict_ix_term = term_term_cooccurrence(dtm_items, verbose=True)
+# dtm_abstracts, terms_abstracts = document_term_cooccurrence(corpus_abstracts, processing=dtm_processing)
+dtm_authors, terms_authors = document_term_cooccurrence(corpus_authors, processing=dtm_processing)
+ttd_items, dict_term_ix_items, dict_ix_term_items = term_term_cooccurrence(dtm_items, verbose=True)
+ttd_authors, dict_term_ix_authors, dict_ix_term_authors = term_term_cooccurrence(dtm_authors, verbose=True)
 
-# Compute construct similarity matrix with LSA.
+# Compute construct similarity matrix with LSA on item corpus.
 print("Computing construct similarity matrix with LSA...")
 vector_dict_lsa, item_vectors_lsa = train_vectors_lsa(dtm_items, n_components=300, return_doc_vectors=True)
 if use_doc_vectors_lsa:
@@ -733,7 +750,7 @@ else:
 construct_similarity_lsa = aggregate_construct_similarity(item_similarity_lsa, gold_items, variable_ids,
                                                           n_similarities=2, verbose=True)
 
-# Compute construct similarity matrix with pre-trained GloVe.
+# Compute construct similarity matrix with pre-trained GloVe on item corpus.
 print("Computing construct similarity matrix with pre-trained GloVe...")
 vector_dict_preglove = load_term_vectors_glove(file_name='glove-pre-trained/glove.6B.300d.txt',
                                                target_terms=terms_items, parser_config=None,
@@ -743,12 +760,12 @@ item_similarity_preglove = aggregate_item_similarity(dtm_items, term_vectors_pre
 construct_similarity_preglove = aggregate_construct_similarity(item_similarity_preglove, gold_items, variable_ids,
                                                                n_similarities=2, verbose=True)
 
-# Compute construct similarity matrix with self-trained GloVe.
+# Compute construct similarity matrix with self-trained GloVe on item corpus.
 print("Computing construct similarity matrix with self-trained GloVe...")
 vector_dict_trglove, loss_glove = train_vectors_glove(ttd_items, n_components=300, alpha=0.75, x_max=100.0,
                                                       step_size=0.05, n_epochs=25, batch_size=64, workers=2,
                                                       verbose=True)  # Train vectors.
-vector_dict_trglove = {dict_ix_term[key]: value for key, value in vector_dict_trglove.items()}  # Translate indices.
+vector_dict_trglove = {dict_ix_term_items[key]: value for key, value in vector_dict_trglove.items()}  # Translate indices.
 term_vectors_trglove = term_vectors_from_dict(vector_dict_trglove, terms_items, normalize=True, verbose=True)
 item_similarity_trglove = aggregate_item_similarity(dtm_items, term_vectors_trglove, n_similarities=2, verbose=True)
 construct_similarity_trglove = aggregate_construct_similarity(item_similarity_trglove, gold_items, variable_ids,
@@ -756,6 +773,17 @@ construct_similarity_trglove = aggregate_construct_similarity(item_similarity_tr
 plt.figure()
 plt.plot(range(len(loss_glove)), loss_glove)
 plt.show()
+
+# Compute construct similarity matrix with LSA on author corpus.
+vector_dict_lsa_authors, coauthors_vectors_lsa = train_vectors_lsa(dtm_authors, n_components=100,
+                                                                   return_doc_vectors=True)
+author_similarity = pd.DataFrame(np.asarray(coauthors_vectors_lsa).dot(coauthors_vectors_lsa.T),
+                                 index=coauthors_vectors_lsa.index.values,
+                                 columns=coauthors_vectors_lsa.index.values)
+construct_similarity_lsa_authors = aggregate_construct_similarity(author_similarity, gold_items, variable_ids,
+                                                                  construct_authors=construct_authors,
+                                                                  n_similarities=2, verbose=True)
+
 
 # Evaluate models.
 print("Evaluating performance...")
@@ -838,13 +866,13 @@ def term_term_cooccurrence_scratch(corpus):
     return tt_dict, dict_term_ix, dict_ix_term
 
 
-def test_ttco():
+def test_ttcs():
     corpus = np.asarray(['it technolog advanc situat',
                          "mari don't like situat",
                          'technolog great',
                          'yes sir sir that question'])
     processing = 'count'
-    result_1, result_2, result_3 = term_term_cooccurrence(corpus, processing=processing)
+    result_1, result_2, result_3 = term_term_cooccurrence_scratch(corpus)
     print(result_1, "\n", result_2, "\n", result_3, "\n")
     info(result_1)
     info(result_2)
@@ -854,6 +882,7 @@ def test_ttco():
 # NOTES: This implementation with construct names seems to be a lot faster than the one with IDs.
 # Indexing afterwards is less convenient though.
 # Calculate construct distances between Larsen's and Funk's datasets. Remove white space around names.
+verbose = True
 gold_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(gold_items['VariableName'])]))
 funk_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(funk_constructs['ConstructName'])]))
 construct_distances = pd.DataFrame(np.zeros([len(gold_construct_names), len(funk_construct_names)]),
