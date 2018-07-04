@@ -647,6 +647,7 @@ def aggregate_construct_similarity(constituent_similarity, gold_items, variable_
 
 
 def test_acs():
+    # Last test 28 June.
     item_similarity = np.asarray([[1.00000000e+00, 8.59243068e-01, 8.90522750e-01, 2.30422117e-16],
                                   [8.59243068e-01, 1.00000000e+00, 1.81708876e-01, -5.31647944e-18],
                                   [8.90522750e-01, 1.81708876e-01, 1.00000000e+00, -1.50979114e-17],
@@ -776,14 +777,16 @@ plt.plot(range(len(loss_glove)), loss_glove)
 plt.show()
 
 # Compute construct similarity matrix with LSA on author corpus.
+var_ids_authors = list(gold2funk.keys())
 vector_dict_lsa_authors, coauthors_vectors_lsa = train_vectors_lsa(dtm_authors, n_components=100,
                                                                    return_doc_vectors=True)
 author_similarity = pd.DataFrame(np.asarray(coauthors_vectors_lsa).dot(coauthors_vectors_lsa.T),
                                  index=coauthors_vectors_lsa.index.values,
                                  columns=coauthors_vectors_lsa.index.values)
-construct_similarity_lsa_authors = aggregate_construct_similarity(author_similarity, gold_items, variable_ids,
+construct_similarity_lsa_authors = aggregate_construct_similarity(author_similarity, gold_items, var_ids_authors,
                                                                   construct_authors=construct_authors,
                                                                   n_similarities=2, verbose=True)
+construct_identity_gold_authors = construct_identity_gold.loc[var_ids_authors, var_ids_authors]
 
 
 # Evaluate models.
@@ -794,6 +797,9 @@ fpr_preglove, tpr_preglove, roc_auc_preglove = evaluate(construct_similarity_pre
 print("ROC AUC pre-trained GloVe =", roc_auc_preglove)
 fpr_trglove, tpr_trglove, roc_auc_trglove = evaluate(construct_similarity_trglove, construct_identity_gold)
 print("ROC AUC self-trained GloVe =", roc_auc_trglove)
+fpr_lsa_auth, tpr_lsa_auth, roc_auc_lsa_auth = evaluate(construct_similarity_lsa_authors,
+                                                        construct_identity_gold_authors)
+print("ROC AUC LSA authors =", roc_auc_lsa_auth)
 
 # Plot ROC curves.
 plt.figure()
