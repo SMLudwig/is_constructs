@@ -604,9 +604,10 @@ def test_ais():
 
 def aggregate_construct_similarity(constituent_similarity, gold_items, variable_ids, construct_authors=None,
                                    n_similarities=2, verbose=False):
-    """Computes construct similarities from items in vector space. To aggregate item cosine similarity to construct
-    similarity, the average similarity of the two most similar items between each construct pair is taken, as
-    established by Larsen and Bong 2016. Creates upper triangular with zero diagonal for efficiency."""
+    """Computes construct similarities from items or authors in vector space. To aggregate constituent
+    cosine similarity to construct similarity, the average similarity of the two most similar constituents
+    between each construct pair is taken, as established by Larsen and Bong 2016 with items.
+    Creates upper triangular with zero diagonal for efficiency."""
     # Implementation checked 4 July.
     authors = constituent_similarity.index.values
     constituent_similarity = np.asarray(constituent_similarity)
@@ -640,7 +641,7 @@ def aggregate_construct_similarity(constituent_similarity, gold_items, variable_
             construct_similarity[ind_1, ind_2] = sim_avg
             ctr += 1
             if verbose and ctr % 5000 == 0:
-                print("Aggregating item to construct similarity...", ctr / n_fields * 100, "%", end='\r')
+                print("Aggregating constituent to construct similarity...", ctr / n_fields * 100, "%", end='\r')
     construct_similarity = pd.DataFrame(construct_similarity, index=variable_ids, columns=variable_ids)
     return construct_similarity
 
