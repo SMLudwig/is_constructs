@@ -14,6 +14,7 @@ import pandas as pd
 import editdistance
 import glove
 import csv
+import timeit
 import matplotlib.pyplot as plt
 
 
@@ -58,7 +59,8 @@ def test_rcig():
 
 
 def load_data(prototype=False, verbose=False):
-    """Loads gold_items, pool_ids, variable_ids, construct_identity_gold and funk_papers."""
+    """Load data. construct_authors are indexed by the matching construct ID in Funk's dataset. Use funk2gold to
+    translate the IDs to matching gold IDs."""
     file = r'LarsenBong2016GoldStandard.xls'
     gold_standard = pd.read_excel(file, sheet_name='GoldStandard')
     gold_items = pd.read_excel(file, sheet_name='Items')
@@ -80,49 +82,79 @@ def load_data(prototype=False, verbose=False):
     # Load the gold standard as matrix DataFrame
     if prototype:
         try:
-            construct_identity_gold = np.loadtxt('construct_identity_gold_prototype.txt')
+            construct_identity_gold = pd.read_pickle('construct_identity_gold_prototype.df')
         except FileNotFoundError:
             if verbose:
                 print("No construct identity gold matrix file found. Creating new file...")
             construct_identity_gold = recreate_construct_identity_gold(gold_standard, pool_ids)
-            np.savetxt('construct_identity_gold_prototype.txt', construct_identity_gold)
+            construct_identity_gold.to_pickle('construct_identity_gold_prototype.df')
     else:
         try:
-            construct_identity_gold = np.loadtxt('construct_identity_gold.txt')
+            construct_identity_gold = pd.read_pickle('construct_identity_gold.df')
         except FileNotFoundError:
             if verbose:
                 print("No construct identity gold matrix file found. Creating new file...")
             construct_identity_gold = recreate_construct_identity_gold(gold_standard, pool_ids)
-            np.savetxt('construct_identity_gold.txt', construct_identity_gold)
+            construct_identity_gold.to_pickle('construct_identity_gold.df')
 
     # Load Funk's data on papers and constructs.
     file = r'datasetFunk/FunkPapers.xlsx'
     funk_papers = pd.read_excel(file)
     file = r'datasetFunk/FunkConstructs.xlsx'
     funk_constructs = pd.read_excel(file)
+    # Get unique construct IDs from Larsen's and Funk's dataset.
+    gold_construct_ids = np.unique(gold_items['VariableId'])
+    funk_construct_ids = np.unique(funk_constructs['ConstructID'])
 
-    # Calculate construct distances between Larsen's and Funk's datasets. Remove white space around names.
-    gold_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(gold_items['VariableName'])]))
-    funk_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(funk_constructs['ConstructName'])]))
-    construct_distances = pd.DataFrame(np.zeros([len(gold_construct_names), len(funk_construct_names)]),
-                                       index=gold_construct_names, columns=funk_construct_names)
-    ctr = 0
-    for gold_con in gold_construct_names:
-        for funk_con in funk_construct_names:
-            construct_distances[funk_con][gold_con] = editdistance.eval(gold_con, funk_con)
-        ctr += 1
-        if verbose and ctr % 50 == 0:
-            print("Relating gold constructs to Funk's constructs:", ctr / len(gold_construct_names) * 100, "%",
-                  flush=True)
+    # Calculate construct distances between constructs in Larsen's and Funk's datasets.
+    # TODO: unit testing
+    # TODO: painfully slow, probably since it has to search in DataFrames every iteration.
+    try:
+        construct_distances = pd.read_pickle('construct_distances.df')
+    except FileNotFoundError:
+        construct_distances = pd.DataFrame(np.zeros([len(gold_construct_ids), len(funk_construct_ids)]),
+                                           index=gold_construct_ids, columns=funk_construct_ids)
+        ctr = 0
+        for gold_id in gold_construct_ids:
+            for funk_id in funk_construct_ids:
+                distance = editdistance.eval(gold_items.loc[gold_items['VariableId'] == gold_id,
+                                                            'VariableName'].iloc[0],
+                                             funk_constructs.loc[funk_constructs['ConstructID'] == funk_id,
+                                                                 'ConstructName'].iloc[0])
+                construct_distances[funk_id][gold_id] = distance    # DataFrames access columns first, then rows.
+            ctr += 1
+            if verbose and ctr % 50 == 0:
+                print("Relating gold constructs to Funk's constructs:", ctr / len(gold_construct_ids) * 100, "%",
+                      flush=True)
+                construct_distances.to_pickle('construct_distances.df')
 
     # Create construct ID translation dictionary between Larsen' and Funk's dataset. Simply uses the first match.
-    # TODO: implement ID to ID dictionary. might change construct_distances indices and columns.
     # TODO: deal with multiple matches.
+    funk2gold = {}
+    max_dist = 1
+    ctr = 0
+    for funk_id in funk_construct_ids:
+        for gold_id in gold_construct_ids:
+            # Check whether the gold_id has alrady been linked to a funk_id. This can happen with multiple matches.
+            if gold_id in funk2gold.values():
+                continue
+            if construct_distances[funk_id][gold_id] <= max_dist:
+                funk2gold[funk_id] = gold_id
+                # Break to go to the next funk_id, so that every id gets only matched once.
+                break
+        ctr += 1
+        if verbose and ctr % 200 == 0:
+            print("Creating construct ID translation dictionary:", ctr / len(funk_construct_ids) * 100, "%",
+                  flush=True)
+    if verbose:
+        print("Related", len(funk_construct_ids), "Funk constructs to", len(gold_construct_ids), "gold constructs.\n",
+              len(funk2gold), "matches found with Levenshtein distance <=", max_dist)
+    gold2funk = {g: f for f, g in funk2gold.items()}
 
     # Get authors of the constructs in Funk's dataset.
+    # Implementation checked 4 July.
     construct_authors = {}
-    construct_ids = np.unique(funk_constructs['ConstructID'])
-    for construct_id in construct_ids:
+    for construct_id in funk_construct_ids:
         # Get PaperID related to a specific ConstructID
         paper_id = funk_constructs.loc[funk_constructs['ConstructID'].isin([construct_id])]['PaperID']
         # Get Author of specific PaperID
@@ -130,7 +162,21 @@ def load_data(prototype=False, verbose=False):
         construct_authors[construct_id] = np.asarray(authors)[0]
 
     return gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers, funk_constructs, \
-           construct_authors, construct_distances
+           construct_authors, construct_distances, funk2gold, gold2funk
+
+
+def test_ld():
+    prototype = False
+    verbose = True
+    gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers, funk_constructs, \
+    construct_authors, construct_distances, funk2gold, gold2funk = load_data(prototype=prototype, verbose=verbose)
+
+    for i in np.unique(gold_items['VariableId'].head(200)):
+        try:
+            print(gold_items.loc[gold_items['VariableId'].isin([i]), 'VariableName'].iloc[0], ":",
+                  construct_authors[gold2funk[i]])
+        except KeyError:
+            pass
 
 
 def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
@@ -658,7 +704,7 @@ use_doc_vectors_lsa = False
 # Load data.
 print("Loading data...")
 gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers, funk_constructs, construct_authors, \
-construct_distances = load_data(prototype=prototype, verbose=True)
+construct_distances, funk2gold, gold2funk = load_data(prototype=prototype, verbose=True)
 
 # Parse texts.
 print("Parsing texts...")
@@ -804,6 +850,22 @@ def test_ttco():
     info(result_2)
     info(result_3)
 
+
+# NOTES: This implementation with construct names seems to be a lot faster than the one with IDs.
+# Indexing afterwards is less convenient though.
+# Calculate construct distances between Larsen's and Funk's datasets. Remove white space around names.
+gold_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(gold_items['VariableName'])]))
+funk_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(funk_constructs['ConstructName'])]))
+construct_distances = pd.DataFrame(np.zeros([len(gold_construct_names), len(funk_construct_names)]),
+                                   index=gold_construct_names, columns=funk_construct_names)
+ctr = 0
+for gold_con in gold_construct_names:
+    for funk_con in funk_construct_names:
+        construct_distances[funk_con][gold_con] = editdistance.eval(gold_con, funk_con)
+    ctr += 1
+    if verbose and ctr % 50 == 0:
+        print("Relating gold constructs to Funk's constructs:", ctr / len(gold_construct_names) * 100, "%",
+              flush=True)
 
 # Convert similarity matrices to Pandas data frames with labelling.
 construct_similarity_lsa = pd.DataFrame(construct_similarity_lsa, index=variable_ids, columns=variable_ids)
