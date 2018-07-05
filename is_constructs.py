@@ -3,6 +3,7 @@ from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import Normalizer
 from sklearn.decomposition import TruncatedSVD
+from sklearn.linear_model import LinearRegression
 from sklearn.metrics import roc_curve
 from sklearn.metrics import roc_auc_score
 
@@ -59,7 +60,7 @@ def test_rcig():
     info(result)
 
 
-def load_data(prototype=False, verbose=False):
+def load_data(prototype=False, max_editdistance=1, verbose=False):
     """Load data. construct_authors are indexed by the matching construct ID in Funk's dataset. Use funk2gold to
     translate the IDs to matching gold IDs."""
     file = r'LarsenBong2016GoldStandard.xls'
@@ -111,7 +112,7 @@ def load_data(prototype=False, verbose=False):
     # TODO: unit testing
     # TODO: painfully slow, probably since it has to search in DataFrames every iteration.
     try:
-        construct_distances = pd.read_pickle('construct_distances.df')
+        construct_distances = pd.read_pickle('construct_editdistances.df')
     except FileNotFoundError:
         construct_distances = pd.DataFrame(np.zeros([len(gold_construct_ids), len(funk_construct_ids)]),
                                            index=gold_construct_ids, columns=funk_construct_ids)
@@ -127,19 +128,18 @@ def load_data(prototype=False, verbose=False):
             if verbose and ctr % 50 == 0:
                 print("Relating gold constructs to Funk's constructs:", ctr / len(gold_construct_ids) * 100, "%",
                       flush=True)
-                construct_distances.to_pickle('construct_distances.df')
+                construct_distances.to_pickle('construct_editdistances.df')
 
     # Create construct ID translation dictionary between Larsen' and Funk's dataset. Simply uses the first match.
     # TODO: deal with multiple matches.
     funk2gold = {}
-    max_dist = 1
     ctr = 0
     for funk_id in funk_construct_ids:
         for gold_id in gold_construct_ids:
             # Check whether the gold_id has alrady been linked to a funk_id. This can happen with multiple matches.
             if gold_id in funk2gold.values():
                 continue
-            if construct_distances[funk_id][gold_id] <= max_dist:
+            if construct_distances[funk_id][gold_id] <= max_editdistance:
                 funk2gold[funk_id] = gold_id
                 # Break to go to the next funk_id, so that every id gets only matched once.
                 break
@@ -149,7 +149,7 @@ def load_data(prototype=False, verbose=False):
                   flush=True)
     if verbose:
         print("Related", len(funk_construct_ids), "Funk constructs to", len(gold_construct_ids), "gold constructs.\n",
-              len(funk2gold), "matches found with Levenshtein distance <=", max_dist)
+              len(funk2gold), "matches found with Levenshtein distance <=", max_editdistance, "\n")
     gold2funk = {g: f for f, g in funk2gold.items()}
 
     # Get authors of the constructs in Funk's dataset.
@@ -216,7 +216,7 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
                 parsed_docs[i] += word + ' '
         parsed_docs[i] = parsed_docs[i].strip()  # remove excess white space
     if verbose and error_words:
-        print("ValueError occurred when stemming the following words:", list(set(error_words)))
+        print("ValueError occurred when stemming the following words:", list(set(error_words)), "\n")
     parsed_docs = list(filter(None, parsed_docs))
     parsed_docs = np.asarray(parsed_docs)
     parser_config = {'stemmer': stemmer, 'lower': lower, 'remove_stop_words': remove_stop_words,
@@ -252,8 +252,7 @@ def document_term_cooccurrence(corpus, processing='l2'):
     'count', 'l2', 'tfidf_l2' and 'log_l2'."""
     # Implementation checked superficially 28 June.
     count_vectorizer = CountVectorizer(stop_words=None, lowercase=False, dtype='int32')
-    dt_matrix = count_vectorizer.fit_transform(corpus)
-    dt_matrix = dt_matrix.toarray()
+    dt_matrix = count_vectorizer.fit_transform(corpus).toarray()
     terms = count_vectorizer.get_feature_names()
     if processing == 'count':
         return pd.DataFrame(dt_matrix, index=corpus, columns=terms), terms
@@ -320,6 +319,8 @@ def term_term_cooccurrence(dt_matrix, verbose=False):
                     tt_dict[i][k] = float(tt_matrix[i][k])
         if verbose and i % 300 == 0:
             print("Building term-term cooccurrence dictionary:", i / len(terms_ix) * 100, "%", flush=True)
+    if verbose:
+        print("\n")
     return tt_dict, dict_term_ix, dict_ix_term
 
 
@@ -355,7 +356,7 @@ def term_vectors_from_dict(vector_dict, target_terms, normalize=True, verbose=Fa
             ctr_oov += 1
         i += 1
     if verbose:
-        print("Created term vectors from dictionary.", ctr_oov, "OOV words.")
+        print("Created term vectors from dictionary.", ctr_oov, "OOV words.", "\n")
     if normalize:
         term_vectors = Normalizer(norm='l2', copy=True).fit_transform(term_vectors)
     term_vectors = pd.DataFrame(term_vectors, index=target_terms)
@@ -380,7 +381,8 @@ def test_tvfd():
 def train_vectors_lsa(dt_matrix, n_components=300, return_doc_vectors=False):
     """Train term and item vectors with SVD a.k.a. LSA."""
     # Implementation checked 28 June.
-    assert len(dt_matrix) >= n_components, "Number of training documents has to be >= number of components."
+    assert len(dt_matrix) >= n_components, \
+        "n docs must be >= n components. " + str(len(dt_matrix)) + " < " + str(n_components)
     documents = dt_matrix.index.values
     terms = dt_matrix.columns.values
     t_svd = TruncatedSVD(n_components=n_components, algorithm='randomized')
@@ -450,6 +452,8 @@ def load_term_vectors_glove(file_name, target_terms, parser_config=None, new_red
                 print("Creating GloVe vector dictionary of relevant terms...", ctr / len(target_terms) * 100, "%",
                       end="\r")
         np.save(file_name[:-4] + '_reduced.npy', vector_dict)
+    if verbose:
+        print("\n")
     return vector_dict
 
 
@@ -490,6 +494,8 @@ def train_vectors_glove(tt_dict, n_components=300, alpha=0.75, x_max=100.0, step
         epoch_loss.append(error)
         if verbose:
             print("GloVe training epoch %d, error %.5f" % (epoch + 1, error), flush=True)
+    if verbose:
+        print("\n")
     vector_matrix = model.W
     vector_dict = {ix: list(vector_matrix[ix]) for ix in tt_dict.keys()}
     return vector_dict, np.asarray(epoch_loss)
@@ -560,7 +566,7 @@ def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose
                 print("Aggregating term to item similarity...", ctr / n_fields * 100, "%", end='\r')
     if verbose:
         print("Number of item-relationships with only one non-zero term similarity due to OOV:", ctr_one)
-        print("Number of item-relationships with no non-zero term similarity due to OOV:", ctr_none)
+        print("Number of item-relationships with no non-zero term similarity due to OOV:", ctr_none, "\n")
     # Mirror lower triangular and fill diagonal of the matrix.
     item_similarity = np.add(item_similarity, item_similarity.T)
     np.fill_diagonal(item_similarity, 1)
@@ -622,8 +628,8 @@ def aggregate_construct_similarity(constituent_similarity, gold_items, variable_
             if construct_authors is not None:
                 # Get author similarity indices between constructs.
                 try:
-                    const_ix_1 = np.where(authors == construct_authors[gold2funk[variable_ids[ind_1]]])[0]
-                    const_ix_2 = np.where(authors == construct_authors[gold2funk[variable_ids[ind_2]]])[0]
+                    constit_ix_1 = np.where(authors == construct_authors[gold2funk[variable_ids[ind_1]]])[0]
+                    constit_ix_2 = np.where(authors == construct_authors[gold2funk[variable_ids[ind_2]]])[0]
                 except KeyError:
                     # TODO: deal with constructs that have unknown authors better
                     construct_similarity[ind_1, ind_2] = 0
@@ -631,12 +637,12 @@ def aggregate_construct_similarity(constituent_similarity, gold_items, variable_
             # Following implementation checked manually.
             else:
                 # Get item similarity indices between the constructs.
-                const_ix_1 = np.where(gold_items['VariableId'] == variable_ids[ind_1])[0]
-                const_ix_2 = np.where(gold_items['VariableId'] == variable_ids[ind_2])[0]
+                constit_ix_1 = np.where(gold_items['VariableId'] == variable_ids[ind_1])[0]
+                constit_ix_2 = np.where(gold_items['VariableId'] == variable_ids[ind_2])[0]
             # Combine item-indices so they fill the upper triangular of the construct similarity matrix.
             item_indices_all = []
-            for i1 in const_ix_1:
-                item_indices_all += [(i1, i2) for i2 in const_ix_2]
+            for i1 in constit_ix_1:
+                item_indices_all += [(i1, i2) for i2 in constit_ix_2]
             item_sim_sub = [constituent_similarity[i] for i in item_indices_all]
             # Compute construct similarity from average of n highest item similarities.
             sim_avg = np.average(np.sort(item_sim_sub, axis=None)[-np.max([n_similarities, 2]):])
@@ -645,6 +651,8 @@ def aggregate_construct_similarity(constituent_similarity, gold_items, variable_
             if verbose and ctr % 5000 == 0:
                 print("Aggregating constituent to construct similarity...", ctr / n_fields * 100, "%", end='\r')
     construct_similarity = pd.DataFrame(construct_similarity, index=variable_ids, columns=variable_ids)
+    if verbose:
+        print("\n")
     return construct_similarity
 
 
@@ -674,24 +682,19 @@ def test_acs():
 
 def evaluate(construct_similarity, construct_identity_gold):
     """Evaluates construct similarity matrix against the Larsen and Bong 2016 gold standard in matrix form."""
-    # Implementation checked 30 June.
+    # Implementation checked 4 July.
     # Unwrap upper triangular of similarity and identity matrix, excluding diagonal.
     # Calculate Receiver Operating Characteristic (ROC) curve.
     construct_similarity = np.asarray(construct_similarity)
     construct_identity_gold = np.asarray(construct_identity_gold)
-
-    # construct_sim_flat = np.asarray([])
-    # construct_idn_gold_flat = np.asarray([])
-    # for row_ind in range(len(construct_similarity)):
-    #     construct_sim_flat = np.append(construct_sim_flat, np.asarray(construct_similarity)[
-    #         row_ind, range(row_ind + 1, len(construct_similarity))])
-    #     construct_idn_gold_flat = np.append(construct_idn_gold_flat, np.asarray(construct_identity_gold)[
-    #         row_ind, range(row_ind + 1, len(construct_identity_gold))])
-
     triu_indices = np.triu_indices(len(construct_similarity), k=1)
-    construct_sim_flat = construct_similarity[triu_indices]
-    construct_idn_gold_flat = construct_identity_gold[triu_indices]
-
+    try:
+        construct_sim_flat = construct_similarity[triu_indices]
+        construct_idn_gold_flat = construct_identity_gold[triu_indices]
+    except IndexError:
+        # Occurs when already flattened arrays are passed.
+        construct_sim_flat = construct_similarity
+        construct_idn_gold_flat = construct_identity_gold
     fpr, tpr, thresholds = roc_curve(construct_idn_gold_flat, construct_sim_flat)
     roc_auc = roc_auc_score(construct_idn_gold_flat, construct_sim_flat)
     return fpr, tpr, roc_auc
@@ -726,7 +729,7 @@ verbose = True
 # Load data.
 print("Loading data...")
 gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers, funk_constructs, construct_authors, \
-construct_distances, funk2gold, gold2funk = load_data(prototype=prototype, verbose=verbose)
+construct_editdistances, funk2gold, gold2funk = load_data(prototype=prototype, max_editdistance=1, verbose=verbose)
 
 # Process corpus texts.
 print("Parsing texts...")
@@ -736,10 +739,10 @@ corpus_items = parse_text(np.asarray(gold_items['Text']), stemmer=stemmer, lower
 # corpus_abstracts = parse_text(np.asarray(funk_papers['Abstract']), stemmer=stemmer, lower=True,
 #                               remove_stop_words=True, return_config=False,
 #                               ignore_chars=ignore_chars, verbose=True)
-corpus_authors = np.asarray(list(construct_authors.values()))
-# authors = parse_text(np.unique(list(construct_authors.values())), stemmer=None, lower=True,
-#                      remove_stop_words=False, return_config=False,
-#                      ignore_chars=ignore_chars, verbose=True)
+corpus_authors = np.unique(list(construct_authors.values()))  # Options: .asarray or .unique
+# corpus_ authors = parse_text(np.unique(list(construct_authors.values())), stemmer=None, lower=True,
+#                              remove_stop_words=False, return_config=False,
+#                              ignore_chars=ignore_chars, verbose=True)
 
 # Create document-term matrices and term-term dictionary.
 print("Creating document-term matrices (docs x terms)...")
@@ -747,7 +750,8 @@ dtm_items, terms_items = document_term_cooccurrence(corpus_items, processing=dtm
 # dtm_abstracts, terms_abstracts = document_term_cooccurrence(corpus_abstracts, processing=dtm_processing)
 dtm_authors, terms_authors = document_term_cooccurrence(corpus_authors, processing=dtm_processing)
 ttd_items, dict_term_ix_items, dict_ix_term_items = term_term_cooccurrence(dtm_items, verbose=verbose)
-ttd_authors, dict_term_ix_authors, dict_ix_term_authors = term_term_cooccurrence(dtm_authors, verbose=verbose)
+# TODO: remove?
+# ttd_authors, dict_term_ix_authors, dict_ix_term_authors = term_term_cooccurrence(dtm_authors, verbose=verbose)
 
 # Compute construct similarity matrix with LSA on item corpus.
 print("Computing construct similarity matrix with LSA...")
@@ -760,6 +764,8 @@ else:
     item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2, verbose=verbose)
 construct_similarity_lsa = aggregate_construct_similarity(item_similarity_lsa, gold_items, variable_ids,
                                                           n_similarities=2, verbose=verbose)
+fpr_lsa, tpr_lsa, roc_auc_lsa = evaluate(construct_similarity_lsa, construct_identity_gold)
+print("ROC AUC LSA =", roc_auc_lsa, "\n")
 
 # Compute construct similarity matrix with pre-trained GloVe on item corpus.
 print("Computing construct similarity matrix with pre-trained GloVe...")
@@ -771,64 +777,130 @@ item_similarity_preglove = aggregate_item_similarity(dtm_items, term_vectors_pre
                                                      verbose=verbose)
 construct_similarity_preglove = aggregate_construct_similarity(item_similarity_preglove, gold_items, variable_ids,
                                                                n_similarities=2, verbose=verbose)
+fpr_preglove, tpr_preglove, roc_auc_preglove = evaluate(construct_similarity_preglove, construct_identity_gold)
+print("ROC AUC pre-trained GloVe =", roc_auc_preglove, "\n")
 
 # Compute construct similarity matrix with self-trained GloVe on item corpus.
 print("Computing construct similarity matrix with self-trained GloVe...")
 vector_dict_trglove, loss_glove = train_vectors_glove(ttd_items, n_components=300, alpha=0.75, x_max=100.0,
                                                       step_size=0.05, n_epochs=25, batch_size=64, workers=2,
                                                       verbose=verbose)  # Train vectors.
+if verbose:
+    plt.figure()
+    plt.plot(range(len(loss_glove)), loss_glove)
+    plt.legend(["GloVe training loss"])
+    plt.show()
 vector_dict_trglove = {dict_ix_term_items[key]: value for key, value in
                        vector_dict_trglove.items()}  # Translate indices.
 term_vectors_trglove = term_vectors_from_dict(vector_dict_trglove, terms_items, normalize=True, verbose=verbose)
 item_similarity_trglove = aggregate_item_similarity(dtm_items, term_vectors_trglove, n_similarities=2, verbose=verbose)
 construct_similarity_trglove = aggregate_construct_similarity(item_similarity_trglove, gold_items, variable_ids,
                                                               n_similarities=2, verbose=verbose)
-if verbose:
-    plt.figure()
-    plt.plot(range(len(loss_glove)), loss_glove)
-    plt.show()
+fpr_trglove, tpr_trglove, roc_auc_trglove = evaluate(construct_similarity_trglove, construct_identity_gold)
+print("ROC AUC self-trained GloVe =", roc_auc_trglove, "\n")
 
+# Compute construct similarity based on normalized author co-occurrence matrix without creating a semantic space.
+var_ids_authors = np.sort(list(gold2funk.keys()))
+author_similarity = np.asarray(dtm_authors).dot(np.asarray(dtm_authors).T)
+author_similarity = pd.DataFrame(author_similarity, index=corpus_authors, columns=corpus_authors)
+construct_similarity_authors = aggregate_construct_similarity(author_similarity, gold_items, var_ids_authors,
+                                                              construct_authors=construct_authors,
+                                                              n_similarities=2, verbose=verbose)
+construct_identity_gold_authors = construct_identity_gold.loc[var_ids_authors, var_ids_authors]
+fpr_auth, tpr_auth, roc_auc_auth = evaluate(construct_similarity_authors,
+                                            construct_identity_gold_authors)
+print("ROC AUC authors =", roc_auc_auth, "\n")
+# Pearson correlation coefficient between construct similarity computed with reduced LSA items and with authors.
+triu_indices = np.triu_indices(len(var_ids_authors), k=1)
+print("Pearson correlation and significance between LSA on items and co-occurr authors:\n",
+      pearsonr(np.asarray(construct_similarity_lsa.loc[var_ids_authors, var_ids_authors])[triu_indices],
+               np.asarray(construct_similarity_authors)[triu_indices]), "\n")
+
+# TODO: below 0.5 performance might be due to possibly unsorted indices in various places. using doc-vectors
+# TODO (cntd.): gives above 0.5 performance. Using unique authors as corpus increases correlation but
+# TODO (cntd.): degrades performance.
 # Compute construct similarity matrix with LSA on author corpus.
-# TODO: using var_ids for Funk constructs to index gold constructs! should be the reason for reduced LSA performance.
 var_ids_authors = np.sort(list(gold2funk.keys()))
 vector_dict_lsa_authors, coauthors_vectors_lsa = train_vectors_lsa(dtm_authors, n_components=100,
                                                                    return_doc_vectors=True)
-author_similarity = pd.DataFrame(np.asarray(coauthors_vectors_lsa).dot(coauthors_vectors_lsa.T),
-                                 index=coauthors_vectors_lsa.index.values,
-                                 columns=coauthors_vectors_lsa.index.values)
-construct_similarity_lsa_authors = aggregate_construct_similarity(author_similarity, gold_items, var_ids_authors,
+author_similarity_lsa = pd.DataFrame(np.asarray(coauthors_vectors_lsa).dot(coauthors_vectors_lsa.T),
+                                     index=coauthors_vectors_lsa.index.values,
+                                     columns=coauthors_vectors_lsa.index.values)
+# author_vectors_lsa = term_vectors_from_dict(vector_dict_lsa_authors, terms_authors, normalize=True, verbose=verbose)
+# author_similarity_lsa = pd.DataFrame(aggregate_item_similarity(dtm_authors, author_vectors_lsa,
+#                                                                n_similarities=2, verbose=verbose),
+#                                      index=dtm_authors.index.values, columns=dtm_authors.index.values)
+construct_similarity_lsa_authors = aggregate_construct_similarity(author_similarity_lsa, gold_items, var_ids_authors,
                                                                   construct_authors=construct_authors,
                                                                   n_similarities=2, verbose=verbose)
 construct_identity_gold_authors = construct_identity_gold.loc[var_ids_authors, var_ids_authors]
-
-# Compute Pearson correlation coefficient between construct similarity computed with reduced items and with authors.
-triu_indices = np.triu_indices(len(var_ids_authors), k=1)
-print(pearsonr(np.asarray(construct_similarity_lsa.loc[var_ids_authors, var_ids_authors])[triu_indices],
-               np.asarray(construct_similarity_lsa_authors)[triu_indices]))
-
-# Evaluate models.
-print("Evaluating performance...")
-fpr_lsa, tpr_lsa, roc_auc_lsa = evaluate(construct_similarity_lsa, construct_identity_gold)
-print("ROC AUC LSA =", roc_auc_lsa)
-fpr_preglove, tpr_preglove, roc_auc_preglove = evaluate(construct_similarity_preglove, construct_identity_gold)
-print("ROC AUC pre-trained GloVe =", roc_auc_preglove)
-fpr_trglove, tpr_trglove, roc_auc_trglove = evaluate(construct_similarity_trglove, construct_identity_gold)
-print("ROC AUC self-trained GloVe =", roc_auc_trglove)
+# Pearson correlation coefficient between construct similarity computed with reduced LSA items and with LSA authors.
 fpr_lsa_auth, tpr_lsa_auth, roc_auc_lsa_auth = evaluate(construct_similarity_lsa_authors,
                                                         construct_identity_gold_authors)
-print("ROC AUC LSA authors =", roc_auc_lsa_auth)
+print("ROC AUC LSA authors =", roc_auc_lsa_auth, "\n")
+triu_indices = np.triu_indices(len(var_ids_authors), k=1)
+print("Pearson correlation and significance between LSA on items and LSA on authors:\n",
+      pearsonr(np.asarray(construct_similarity_lsa.loc[var_ids_authors, var_ids_authors])[triu_indices],
+               np.asarray(construct_similarity_lsa_authors)[triu_indices]), "\n")
+
+# Perform linear regression on self-trained GloVe.
+lin_reg_trglove_X = np.asarray(np.asarray(construct_similarity_trglove)[triu_indices]).reshape(-1, 1)
+lin_reg_y = np.asarray(construct_identity_gold_authors)[triu_indices].reshape(-1, 1)
+lin_reg_trglove = LinearRegression(fit_intercept=True, normalize=False, copy_X=True, n_jobs=1)
+lin_reg_trglove = lin_reg_trglove.fit(lin_reg_trglove_X, lin_reg_y)
+print("Linear regression (trGloVe) coefficients:", lin_reg_trglove.coef_)
+lin_reg_trglove_r2 = lin_reg_trglove.score(lin_reg_trglove_X, lin_reg_y)
+print("Linear regression (trGloVe) R-squared:", lin_reg_trglove_r2)
+
+# Perform linear regression on all construct similarity measures.
+similarities_flat_all = np.asarray(np.asmatrix([np.asarray(construct_similarity_lsa)[triu_indices],
+                                                np.asarray(construct_similarity_preglove)[triu_indices],
+                                                np.asarray(construct_similarity_trglove)[triu_indices],
+                                                np.asarray(construct_similarity_authors)[triu_indices],
+                                                np.asarray(construct_similarity_lsa_authors)[triu_indices]]).T)
+lin_reg_y = np.asarray(construct_identity_gold_authors)[triu_indices].reshape(-1, 1)
+lin_reg_all = LinearRegression(fit_intercept=True, normalize=False, copy_X=True, n_jobs=1)
+lin_reg_all = lin_reg_all.fit(similarities_flat_all, lin_reg_y)
+print("Linear regression (all) coefficients:", lin_reg_all.coef_)
+lin_reg_all_r2 = lin_reg_all.score(similarities_flat_all, lin_reg_y)
+print("Linear regression (all) R-squared:", lin_reg_all_r2, "\n")
+
+# Take mean of similarity measures and evaluate.
+fpr_mean_all, tpr_mean_all, roc_auc_mean_all = evaluate(np.mean(similarities_flat_all, axis=1),
+                                                        np.asarray(construct_identity_gold_authors)[triu_indices])
+print("ROC AUC mean all =", roc_auc_mean_all, "\n")
+
+# Take mean of LSA, preGloVe and trGloVe and evaluate.
+similarities_flat_lsa_glove = similarities_flat_all[:, 0:3]
+fpr_mean_lsa_glove, tpr_mean_lsa_glove, roc_auc_mean_lsa_glove = evaluate(
+    np.mean(similarities_flat_lsa_glove, axis=1), np.asarray(construct_identity_gold_authors)[triu_indices])
+print("ROC AUC mean LSA GloVe =", roc_auc_mean_lsa_glove, "\n")
+
+# Construct correlation matrix between all construct similarities.
+all_similarities = np.asarray(np.asmatrix([np.asarray(construct_similarity_lsa)[triu_indices],
+                                           np.asarray(construct_similarity_preglove)[triu_indices],
+                                           np.asarray(construct_similarity_trglove)[triu_indices],
+                                           np.asarray(construct_similarity_authors)[triu_indices],
+                                           np.asarray(construct_similarity_lsa_authors)[triu_indices],
+                                           np.asarray(construct_identity_gold_authors)[triu_indices]]).T)
+all_similarities = pd.DataFrame(all_similarities, columns=['LSA', 'preGloVe', 'trGloVe', 'Authors', 'LSA authors',
+                                                           'gold'])
+print("Correlations between all construct similarity measures:")
+print(all_similarities.corr(), "\n")
 
 if verbose:
     # Plot ROC curves.
     plt.figure()
     plt.grid(True)
     plt.plot(fpr_lsa, tpr_lsa)
-    # plt.plot(fpr_preglove, tpr_preglove)
-    # plt.plot(fpr_trglove, tpr_trglove)
+    plt.plot(fpr_preglove, tpr_preglove)
+    plt.plot(fpr_trglove, tpr_trglove)
+    plt.plot(fpr_auth, tpr_auth)
     plt.plot(fpr_lsa_auth, tpr_lsa_auth)
+    plt.plot(fpr_mean_all, tpr_mean_all)
     plt.xlabel("False Positive Rate (FPR)")
     plt.ylabel("True Positive Rate (TPR)")
-    plt.legend(["LSA", "pre-trained GloVe", "self-trained GloVe", "LSA authors"])
+    plt.legend(["LSA", "pre-trained GloVe", "self-trained GloVe", "Authors", "LSA authors", "mean all"])
     plt.show()
 
 
@@ -911,12 +983,12 @@ def test_ttcs():
 verbose = True
 gold_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(gold_items['VariableName'])]))
 funk_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(funk_constructs['ConstructName'])]))
-construct_distances = pd.DataFrame(np.zeros([len(gold_construct_names), len(funk_construct_names)]),
-                                   index=gold_construct_names, columns=funk_construct_names)
+construct_editdistances = pd.DataFrame(np.zeros([len(gold_construct_names), len(funk_construct_names)]),
+                                       index=gold_construct_names, columns=funk_construct_names)
 ctr = 0
 for gold_con in gold_construct_names:
     for funk_con in funk_construct_names:
-        construct_distances[funk_con][gold_con] = editdistance.eval(gold_con, funk_con)
+        construct_editdistances[funk_con][gold_con] = editdistance.eval(gold_con, funk_con)
     ctr += 1
     if verbose and ctr % 50 == 0:
         print("Relating gold constructs to Funk's constructs:", ctr / len(gold_construct_names) * 100, "%",
