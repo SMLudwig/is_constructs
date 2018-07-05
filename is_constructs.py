@@ -204,7 +204,7 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
     parsed_docs = []
     error_words = []
     for i in range(len(documents)):
-        assert isinstance(documents[i], str), "Document not a string." + str(documents[i])
+        assert isinstance(documents[i], str), "Document not a string:" + str(documents[i])
         if ignore_chars != '':
             documents[i] = ' '.join(documents[i].translate({ord(c): ' ' for c in ignore_chars}).split())
         if lower:
@@ -229,7 +229,7 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
                     parsed_docs[i] += word + ' '
             else:
                 parsed_docs[i] += word + ' '
-        parsed_docs[i] = ' '.join(parsed_docs[i].strip())  # remove excess white space
+        parsed_docs[i] = ' '.join(parsed_docs[i].split())  # remove excess white space
     if verbose and error_words:
         print("ValueError occurred when stemming the following words:", list(set(error_words)), "\n")
     parsed_docs = list(filter(None, parsed_docs))
