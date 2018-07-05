@@ -4,6 +4,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import Normalizer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve
 from sklearn.metrics import roc_auc_score
 
@@ -577,7 +578,7 @@ def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose
                     ctr_none += 1
             item_similarity[ind_1, ind_2] = sim_avg
             ctr += 1
-            if verbose and ctr % 60000 == 0:
+            if verbose and ctr % 100000 == 0:
                 print("Aggregating term to item similarity...", ctr / n_fields * 100, "%", end='\r')
     if verbose:
         print("Number of item-relationships with only one non-zero term similarity due to OOV:", ctr_one)
@@ -745,6 +746,8 @@ verbose = True
 print("Loading data...")
 gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers, funk_constructs, construct_authors, \
 construct_editdistances, funk2gold, gold2funk = load_data(prototype=prototype, max_editdistance=1, verbose=verbose)
+var_ids_authors = np.sort(list(gold2funk.keys()))
+triu_indices = np.triu_indices(len(var_ids_authors), k=1)
 
 # Process corpus texts.
 print("Parsing texts...")
@@ -815,7 +818,6 @@ fpr_trglove, tpr_trglove, roc_auc_trglove = evaluate(construct_similarity_trglov
 print("ROC AUC self-trained GloVe =", roc_auc_trglove, "\n")
 
 # Compute construct similarity based on normalized author co-occurrence matrix without creating a semantic space.
-var_ids_authors = np.sort(list(gold2funk.keys()))
 author_similarity = np.asarray(dtm_authors).dot(np.asarray(dtm_authors).T)
 author_similarity = pd.DataFrame(author_similarity, index=corpus_authors, columns=corpus_authors)
 construct_similarity_authors = aggregate_construct_similarity(author_similarity, gold_items, var_ids_authors,
@@ -826,7 +828,6 @@ fpr_auth, tpr_auth, roc_auc_auth = evaluate(construct_similarity_authors,
                                             construct_identity_gold_authors)
 print("ROC AUC authors =", roc_auc_auth, "\n")
 # Pearson correlation coefficient between construct similarity computed with reduced LSA items and with authors.
-triu_indices = np.triu_indices(len(var_ids_authors), k=1)
 print("Pearson correlation and significance between LSA on items and co-occurr authors:\n",
       pearsonr(np.asarray(construct_similarity_lsa.loc[var_ids_authors, var_ids_authors])[triu_indices],
                np.asarray(construct_similarity_authors)[triu_indices]), "\n")
@@ -860,11 +861,11 @@ print("Pearson correlation and significance between LSA on items and LSA on auth
 
 # Perform linear regression on self-trained GloVe.
 lin_reg_trglove_X = np.asarray(np.asarray(construct_similarity_trglove)[triu_indices]).reshape(-1, 1)
-lin_reg_y = np.asarray(construct_identity_gold_authors)[triu_indices].reshape(-1, 1)
+regression_y = np.asarray(construct_identity_gold_authors)[triu_indices].reshape(-1, 1)
 lin_reg_trglove = LinearRegression(fit_intercept=True, normalize=False, copy_X=True, n_jobs=1)
-lin_reg_trglove = lin_reg_trglove.fit(lin_reg_trglove_X, lin_reg_y)
+lin_reg_trglove = lin_reg_trglove.fit(lin_reg_trglove_X, regression_y)
 print("Linear regression (trGloVe) coefficients:", lin_reg_trglove.coef_)
-lin_reg_trglove_r2 = lin_reg_trglove.score(lin_reg_trglove_X, lin_reg_y)
+lin_reg_trglove_r2 = lin_reg_trglove.score(lin_reg_trglove_X, regression_y)
 print("Linear regression (trGloVe) R-squared:", lin_reg_trglove_r2)
 
 # Perform linear regression on all construct similarity measures.
@@ -873,12 +874,43 @@ similarities_flat_all = np.asarray(np.asmatrix([np.asarray(construct_similarity_
                                                 np.asarray(construct_similarity_trglove)[triu_indices],
                                                 np.asarray(construct_similarity_authors)[triu_indices],
                                                 np.asarray(construct_similarity_lsa_authors)[triu_indices]]).T)
-lin_reg_y = np.asarray(construct_identity_gold_authors)[triu_indices].reshape(-1, 1)
+regression_y = np.asarray(construct_identity_gold_authors)[triu_indices]
 lin_reg_all = LinearRegression(fit_intercept=True, normalize=False, copy_X=True, n_jobs=1)
-lin_reg_all = lin_reg_all.fit(similarities_flat_all, lin_reg_y)
+lin_reg_all = lin_reg_all.fit(similarities_flat_all, regression_y.reshape(-1, 1))
 print("Linear regression (all) coefficients:", lin_reg_all.coef_)
-lin_reg_all_r2 = lin_reg_all.score(similarities_flat_all, lin_reg_y)
+lin_reg_all_r2 = lin_reg_all.score(similarities_flat_all, regression_y.reshape(-1, 1))
 print("Linear regression (all) R-squared:", lin_reg_all_r2, "\n")
+lin_reg_all_prediction = lin_reg_all.predict(similarities_flat_all)
+fpr_linreg_all, tpr_linreg_all, roc_auc_linreg_all = evaluate(lin_reg_all_prediction,
+                                                              np.asarray(construct_identity_gold_authors)[
+                                                                  triu_indices])
+print("ROC AUC linreg all =", roc_auc_linreg_all, "\n")
+
+# Perform logistic regression on trGloVe.
+log_reg_trglove = LogisticRegression(fit_intercept=False, class_weight=None, multi_class='ovr',
+                                     solver='newton-cg').fit(np.asarray(
+    construct_similarity_trglove)[triu_indices].reshape(-1, 1), regression_y)
+print("Logistic regression (trGloVe) coefficients:", log_reg_trglove.coef_)
+log_reg_trglove_r2 = log_reg_trglove.score(np.asarray(construct_similarity_trglove)[triu_indices].reshape(-1, 1),
+                                           regression_y)
+print("Logistic regression (trGloVe) R-squared:", log_reg_trglove_r2, "\n")
+log_reg_trglove_prediction = log_reg_trglove.predict_proba(np.asarray(
+    construct_similarity_trglove)[triu_indices].reshape(-1, 1))
+fpr_log_trglove, tpr_log_trglove, roc_auc_log_trglove = evaluate(log_reg_trglove_prediction[:, 1],
+                                                                 np.asarray(construct_identity_gold_authors)[
+                                                                     triu_indices])
+print("ROC AUC logreg trGloVe =", roc_auc_log_trglove, "\n")
+
+# Perform logistic regression on all construct similarity measures.
+log_reg_all = LogisticRegression(fit_intercept=False, class_weight=None, multi_class='ovr',
+                                 solver='newton-cg').fit(similarities_flat_all, regression_y)
+print("Logistic regression (all) coefficients:", log_reg_all.coef_)
+log_reg_all_r2 = log_reg_all.score(similarities_flat_all, regression_y)
+print("Logistic regression (all) R-squared:", log_reg_all_r2, "\n")
+log_reg_all_prediction = log_reg_all.predict_proba(similarities_flat_all)
+fpr_log_all, tpr_log_all, roc_auc_log_all = evaluate(log_reg_all_prediction[:, 1],
+                                                     np.asarray(construct_identity_gold_authors)[triu_indices])
+print("ROC AUC logreg all =", roc_auc_log_all, "\n")
 
 # Take mean of similarity measures and evaluate.
 fpr_mean_all, tpr_mean_all, roc_auc_mean_all = evaluate(np.mean(similarities_flat_all, axis=1),
@@ -892,16 +924,17 @@ fpr_mean_lsa_glove, tpr_mean_lsa_glove, roc_auc_mean_lsa_glove = evaluate(
 print("ROC AUC mean LSA GloVe =", roc_auc_mean_lsa_glove, "\n")
 
 # Construct correlation matrix between all construct similarities.
-all_similarities = np.asarray(np.asmatrix([np.asarray(construct_similarity_lsa)[triu_indices],
-                                           np.asarray(construct_similarity_preglove)[triu_indices],
-                                           np.asarray(construct_similarity_trglove)[triu_indices],
-                                           np.asarray(construct_similarity_authors)[triu_indices],
-                                           np.asarray(construct_similarity_lsa_authors)[triu_indices],
-                                           np.asarray(construct_identity_gold_authors)[triu_indices]]).T)
-all_similarities = pd.DataFrame(all_similarities, columns=['LSA', 'preGloVe', 'trGloVe', 'Authors', 'LSA authors',
-                                                           'gold'])
+all_similarities_gold = np.asarray(np.asmatrix([np.asarray(construct_similarity_lsa)[triu_indices],
+                                                np.asarray(construct_similarity_preglove)[triu_indices],
+                                                np.asarray(construct_similarity_trglove)[triu_indices],
+                                                np.asarray(construct_similarity_authors)[triu_indices],
+                                                np.asarray(construct_similarity_lsa_authors)[triu_indices],
+                                                np.asarray(construct_identity_gold_authors)[triu_indices]]).T)
+all_similarities_gold = pd.DataFrame(all_similarities_gold, columns=['LSA', 'preGloVe', 'trGloVe', 'Authors',
+                                                                     'LSA authors', 'gold'])
+all_similarity_correlations = all_similarities_gold.corr()
 print("Correlations between all construct similarity measures:")
-print(all_similarities.corr(), "\n")
+print(all_similarity_correlations, "\n")
 
 if verbose:
     # Plot ROC curves.
@@ -913,9 +946,10 @@ if verbose:
     plt.plot(fpr_auth, tpr_auth)
     plt.plot(fpr_lsa_auth, tpr_lsa_auth)
     plt.plot(fpr_mean_all, tpr_mean_all)
+    plt.plot(fpr_log_all, tpr_log_all)
     plt.xlabel("False Positive Rate (FPR)")
     plt.ylabel("True Positive Rate (TPR)")
-    plt.legend(["LSA", "pre-trained GloVe", "self-trained GloVe", "Authors", "LSA authors", "mean all"])
+    plt.legend(["LSA", "preGloVe", "trGloVe", "authors", "LSA authors", "mean all", "log-reg all"])
     plt.show()
 
 
