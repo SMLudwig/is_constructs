@@ -17,6 +17,7 @@ import pandas as pd
 import editdistance
 import glove
 import csv
+import warnings
 import matplotlib.pyplot as plt
 
 
@@ -114,21 +115,34 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
     try:
         construct_distances = pd.read_pickle('construct_editdistances.df')
     except FileNotFoundError:
+        print("No construct editdistance file found. Creating new file...")
+        if prototype:
+            warnings.warn("Computing distances in prototype mode. Remember to delete file for full mode.")
+        # Remove ignore characters from construct names to make them more comparable. Add parsed names to DataFrames.
+        ignore_chars = '''.,:;"!?-/()[]{}&%0123456789'''
+        gold_names_parsed = [' '.join(name.translate({ord(c): ' ' for c in ignore_chars}).lower().split())
+                             for name in gold_items['VariableName']]
+        gold_items['VariableNameParse'] = gold_names_parsed
+        funk_names_parsed = [' '.join(name.translate({ord(c): ' ' for c in ignore_chars}).lower().split())
+                             for name in funk_constructs['ConstructName']]
+        funk_constructs['ConstructNameParse'] = funk_names_parsed
+
+        # TODO: could create two dicts ID: ConstructName to speed this up.
+        # Evaluate distances and fill new DataFrame.
         construct_distances = pd.DataFrame(np.zeros([len(gold_construct_ids), len(funk_construct_ids)]),
                                            index=gold_construct_ids, columns=funk_construct_ids)
         ctr = 0
         for gold_id in gold_construct_ids:
             for funk_id in funk_construct_ids:
-                distance = editdistance.eval(gold_items.loc[gold_items['VariableId'] == gold_id,
-                                                            'VariableName'].iloc[0],
-                                             funk_constructs.loc[funk_constructs['ConstructID'] == funk_id,
-                                                                 'ConstructName'].iloc[0])
+                gold_name = gold_items.loc[gold_items['VariableId'] == gold_id, 'VariableNameParse'].iloc[0]
+                funk_name = funk_constructs.loc[funk_constructs['ConstructID'] == funk_id, 'ConstructNameParse'].iloc[0]
+                distance = editdistance.eval(gold_name, funk_name)
                 construct_distances[funk_id][gold_id] = distance  # DataFrames access columns first, then rows.
             ctr += 1
-            if verbose and ctr % 50 == 0:
+            if verbose and ctr % 30 == 0:
                 print("Relating gold constructs to Funk's constructs:", ctr / len(gold_construct_ids) * 100, "%",
                       flush=True)
-                construct_distances.to_pickle('construct_editdistances.df')
+        construct_distances.to_pickle('construct_editdistances.df')
 
     # Create construct ID translation dictionary between Larsen' and Funk's dataset. Simply uses the first match.
     # TODO: deal with multiple matches.
@@ -181,7 +195,7 @@ def test_ld():
 
 
 def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
-               return_config=False, ignore_chars='''.,:;"!?-/()[]{}0123456789''', verbose=False):
+               return_config=False, ignore_chars='''.,:;"!?-/()[]{}&%0123456789''', verbose=False):
     """Parses text with options for removing specified characters, removing stop-words, converting to lower-case
     and stemming (https://pypi.org/project/stemming/1.0/). Available stemming algorithms are 'porter2' and
     'paicehusk'. Paice/Husk seems prone to over-stemming."""
@@ -192,13 +206,14 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
     for i in range(len(documents)):
         assert isinstance(documents[i], str), "Document not a string." + str(documents[i])
         if ignore_chars != '':
-            documents[i] = documents[i].translate({ord(c): ' ' for c in ignore_chars})
+            documents[i] = ' '.join(documents[i].translate({ord(c): ' ' for c in ignore_chars}).split())
         if lower:
             documents[i] = documents[i].lower()
         parsed_docs.append('')
         for word in documents[i].split():
             if remove_stop_words and word in stop_words.ENGLISH_STOP_WORDS:
                 continue
+            # TODO: what does this do?
             if word == '':
                 continue
             if stemmer is not None:
@@ -214,7 +229,7 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
                     parsed_docs[i] += word + ' '
             else:
                 parsed_docs[i] += word + ' '
-        parsed_docs[i] = parsed_docs[i].strip()  # remove excess white space
+        parsed_docs[i] = ' '.join(parsed_docs[i].strip())  # remove excess white space
     if verbose and error_words:
         print("ValueError occurred when stemming the following words:", list(set(error_words)), "\n")
     parsed_docs = list(filter(None, parsed_docs))
@@ -721,7 +736,7 @@ def test_e():
 # Define central parameters.
 prototype = True
 stemmer = 'porter2'
-ignore_chars = '''.,:;"!?_-/()[]{}0123456789'''
+ignore_chars = '''.,:;"!?_-/()[]{}&%0123456789'''
 dtm_processing = 'tfidf_l2'
 use_doc_vectors_lsa = True
 verbose = True
@@ -976,27 +991,6 @@ def test_ttcs():
     info(result_2)
     info(result_3)
 
-
-# NOTES: This implementation with construct names seems to be a lot faster than the one with IDs.
-# Indexing afterwards is less convenient though.
-# Calculate construct distances between Larsen's and Funk's datasets. Remove white space around names.
-verbose = True
-gold_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(gold_items['VariableName'])]))
-funk_construct_names = np.sort(np.asarray([i.strip() for i in np.unique(funk_constructs['ConstructName'])]))
-construct_editdistances = pd.DataFrame(np.zeros([len(gold_construct_names), len(funk_construct_names)]),
-                                       index=gold_construct_names, columns=funk_construct_names)
-ctr = 0
-for gold_con in gold_construct_names:
-    for funk_con in funk_construct_names:
-        construct_editdistances[funk_con][gold_con] = editdistance.eval(gold_con, funk_con)
-    ctr += 1
-    if verbose and ctr % 50 == 0:
-        print("Relating gold constructs to Funk's constructs:", ctr / len(gold_construct_names) * 100, "%",
-              flush=True)
-
-# Convert similarity matrices to Pandas data frames with labelling.
-construct_similarity_lsa = pd.DataFrame(construct_similarity_lsa, index=variable_ids, columns=variable_ids)
-construct_similarity_preglove = pd.DataFrame(construct_similarity_preglove, index=variable_ids, columns=variable_ids)
 
 # NOTES: Load the results from 'GloVe_search_results.npy'. Best results around 0.63.
 # Parameter search for GloVe document projection by weighted item vectors.
