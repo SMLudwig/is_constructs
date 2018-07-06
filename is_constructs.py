@@ -120,7 +120,7 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
         if prototype:
             warnings.warn("Computing distances in prototype mode. Remember to delete file for full mode.")
         # Remove ignore characters from construct names to make them more comparable. Add parsed names to DataFrames.
-        ignore_chars = '''.,:;"!?-/()[]{}&%0123456789'''
+        ignore_chars = '''.,:;"'!?-/()[]{}&%0123456789'''
         gold_names_parsed = [' '.join(name.translate({ord(c): ' ' for c in ignore_chars}).lower().split())
                              for name in gold_items['VariableName']]
         gold_items['VariableNameParse'] = gold_names_parsed
@@ -196,7 +196,7 @@ def test_ld():
 
 
 def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
-               return_config=False, ignore_chars='''.,:;"!?-/()[]{}&%0123456789''', verbose=False):
+               return_config=False, ignore_chars='''.,:;"'!?-/()[]{}&%0123456789''', verbose=False):
     """Parses text with options for removing specified characters, removing stop-words, converting to lower-case
     and stemming (https://pypi.org/project/stemming/1.0/). Available stemming algorithms are 'porter2' and
     'paicehusk'. Paice/Husk seems prone to over-stemming."""
@@ -253,7 +253,7 @@ def test_pt():
     lower = True
     remove_stop_words = True
     return_config = True
-    ignore_chars = '''.,:;"!?-/()[]{}0123456789'''
+    ignore_chars = '''.,:;"'!?-/()[]{}0123456789'''
     verbose = True
     result_1, result_2 = parse_text(documents, stemmer=stemmer, lower=lower, remove_stop_words=remove_stop_words,
                                     return_config=return_config, ignore_chars=ignore_chars, verbose=verbose)
@@ -478,7 +478,7 @@ def test_ltvg():
     target_terms = np.asarray(['advanc', 'don', 'great', 'it', 'like', 'mari', 'question', 'sir', 'situat',
                                'technolog', 'that', 'yes'])
     parser_config = {'stemmer': 'porter2', 'lower': True, 'remove_stop_words': True,
-                     'ignore_chars': '.,:;"!?-/()[]{}0123456789'}
+                     'ignore_chars': '''.,:;"'!?-/()[]{}0123456789'''}
     parser_config = None
     new_reduce_dict = True
     verbose = True
@@ -532,6 +532,59 @@ def test_tvg():
     result = train_vectors_glove(tt_dict, n_components=n_components, alpha=alpha, x_max=x_max,
                                  step_size=step_size, n_epochs=n_epochs, batch_size=batch_size, workers=workers,
                                  verbose=verbose)
+    print(result, "\n")
+    info(result)
+
+
+def vector_average(dt_matrix, term_vectors, weighting=False):
+    """Compute vector average of term vectors to form item vectors. If weighting=True, weights are values in the
+    dt_matrix, mean is computed by dividing weighted sum of the vectors by sum of the weights."""
+    # Implementation checked 6 July.
+    doc_vectors = pd.DataFrame(np.zeros([len(dt_matrix), len(term_vectors.iloc[0])]), index=dt_matrix.index.values)
+    for i in range(len(dt_matrix)):
+        doc_term_vectors = term_vectors.loc[dt_matrix.columns.values[dt_matrix.iloc[i] > 0]]
+        if weighting:
+            # Take weighted mean, dividing by sum of weights.
+            weights = dt_matrix.iloc[i][dt_matrix.iloc[i] > 0]
+            for w_ix in weights.index.values:
+                doc_term_vectors.loc[w_ix] = doc_term_vectors.loc[w_ix] * weights.loc[w_ix]
+            doc_vectors.iloc[i] = np.sum(np.asarray(doc_term_vectors), axis=0) / np.sum(weights)
+        else:
+            doc_vectors.iloc[i] = np.mean(np.asarray(doc_term_vectors), axis=0)
+    return doc_vectors
+
+
+def test_va():
+    dt_matrix = np.asarray([[0.61449708, 0., 0., 0.61449708, 0., 0., 0., 0., 0.34984759, 0.34984759, 0., 0.],
+                            [0., 0.54848033, 0., 0., 0.54848033, 0.54848033, 0., 0., 0.31226271, 0., 0., 0.],
+                            [0., 0., 0.86903011, 0., 0., 0., 0., 0., 0., 0.49475921, 0., 0.],
+                            [0., 0., 0., 0., 0., 0., 0.27683498, 0.87754612, 0., 0., 0.27683498, 0.27683498]])
+    items = np.asarray(['it technolog advanc situat',
+                        "mari don't like situat",
+                        'technolog great',
+                        'yes sir sir that question'])
+    terms = np.asarray(['advanc', "don't", 'great', 'it', 'like', 'mari', 'question', 'sir', 'situat',
+                        'technolog', 'that', 'yes'])
+    dt_matrix = pd.DataFrame(dt_matrix, index=items, columns=terms)
+    vector_dict = {'advanc': [0.39588465221557745, -1.2575977953455109e-08, 1.249000902703301e-16, 0.48723035562135314],
+                   "don't": [0.18859491626619804, 0.46382576479578286, -5.84601811404184e-16, -0.232110931026861],
+                   'great': [0.47345367495179425, -0.46382576898144157, -4.579669976578771e-16, -0.5826974842832673],
+                   'it': [0.39588465221557745, -1.2575978064477411e-08, -6.938893903907228e-18, 0.4872303556213531],
+                   'like': [0.18859491626619812, 0.46382576479578286, -5.689893001203927e-16, -0.23211093102686112],
+                   'mari': [0.18859491626619812, 0.46382576479578286, -5.689893001203927e-16, -0.23211093102686112],
+                   'question': [1.7607443281164592e-16, 1.3183898417423734e-16, 0.27683497845223565,
+                                -1.3183898417423734e-16],
+                   'sir': [5.551115123125783e-16, 3.677613769070831e-16, 0.877546115093703, -5.689893001203927e-16],
+                   'situat': [0.33275791820247796, 0.2640668742960114, -2.706168622523819e-16, 0.1452454665254026],
+                   'technolog': [0.49493468508898575, -0.2640668886156101, -2.706168622523819e-16,
+                                 -0.05435167411847225],
+                   'that': [1.7607443281164592e-16, 1.3183898417423734e-16, 0.27683497845223565,
+                            -1.3183898417423734e-16],
+                   'yes': [1.7607443281164592e-16, 1.3183898417423734e-16, 0.27683497845223565,
+                           -1.3183898417423734e-16]}
+    term_vectors = term_vectors_from_dict(vector_dict, terms, normalize=False)
+    weighting = False
+    result = vector_average(dt_matrix, term_vectors, weighting=weighting)
     print(result, "\n")
     info(result)
 
@@ -737,7 +790,7 @@ def test_e():
 # Define central parameters.
 prototype = True
 stemmer = 'porter2'
-ignore_chars = '''.,:;"!?_-/()[]{}&%0123456789'''
+ignore_chars = '''.,:;"'!?_-/()[]{}&%0123456789'''
 dtm_processing = 'tfidf_l2'
 use_doc_vectors_lsa = True
 verbose = True
@@ -747,6 +800,7 @@ print("Loading data...")
 gold_items, pool_ids, variable_ids, construct_identity_gold, funk_papers, funk_constructs, construct_authors, \
 construct_editdistances, funk2gold, gold2funk = load_data(prototype=prototype, max_editdistance=1, verbose=verbose)
 var_ids_authors = np.sort(list(gold2funk.keys()))
+construct_identity_gold_authors = construct_identity_gold.loc[var_ids_authors, var_ids_authors]
 triu_indices = np.triu_indices(len(var_ids_authors), k=1)
 
 # Process corpus texts.
@@ -768,8 +822,7 @@ dtm_items, terms_items = document_term_cooccurrence(corpus_items, processing=dtm
 # dtm_abstracts, terms_abstracts = document_term_cooccurrence(corpus_abstracts, processing=dtm_processing)
 dtm_authors, terms_authors = document_term_cooccurrence(corpus_authors, processing=dtm_processing)
 ttd_items, dict_term_ix_items, dict_ix_term_items = term_term_cooccurrence(dtm_items, verbose=verbose)
-# TODO: remove?
-# ttd_authors, dict_term_ix_authors, dict_ix_term_authors = term_term_cooccurrence(dtm_authors, verbose=verbose)
+ttd_authors, dict_term_ix_authors, dict_ix_term_authors = term_term_cooccurrence(dtm_authors, verbose=verbose)
 
 # Compute construct similarity matrix with LSA on item corpus.
 print("Computing construct similarity matrix with LSA...")
@@ -779,11 +832,34 @@ if use_doc_vectors_lsa:
                                        index=gold_items, columns=gold_items)
 else:
     term_vectors_lsa = term_vectors_from_dict(vector_dict_lsa, terms_items, normalize=True, verbose=verbose)
-    item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2, verbose=verbose)
+    # item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2, verbose=verbose)
+    item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, weighting=False)
+    item_similarity_lsa = pd.DataFrame(np.asarray(
+        np.asmatrix(item_vectors_lsa_avg) * np.asmatrix(item_vectors_lsa_avg).T),
+        index=item_vectors_lsa_avg.index.values, columns=item_vectors_lsa_avg.index.values)
 construct_similarity_lsa = aggregate_construct_similarity(item_similarity_lsa, gold_items, variable_ids,
                                                           n_similarities=2, verbose=verbose)
 fpr_lsa, tpr_lsa, roc_auc_lsa = evaluate(construct_similarity_lsa, construct_identity_gold)
 print("ROC AUC LSA =", roc_auc_lsa, "\n")
+
+# Compare item vector and item similarity aggregation methods.
+term_vectors_lsa = term_vectors_from_dict(vector_dict_lsa, terms_items, normalize=True, verbose=verbose)
+item_vectors_lsa_dvec = item_vectors_lsa
+item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, weighting=False)
+item_similarity_lsa_dvec = np.asarray(np.asmatrix(item_vectors_lsa_dvec) * np.asmatrix(item_vectors_lsa_dvec).T)
+item_similarity_lsa_avg = np.asarray(np.asmatrix(item_vectors_lsa_avg) * np.asmatrix(item_vectors_lsa_avg).T)
+item_similarity_lsa_agg = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2,
+                                                    verbose=verbose)
+item_similarity_methods = pd.DataFrame(
+    np.asarray(np.asmatrix([np.asarray(item_similarity_lsa_dvec)[np.triu_indices(len(item_similarity_lsa), k=1)],
+                            np.asarray(item_similarity_lsa_avg)[np.triu_indices(len(item_similarity_lsa), k=1)],
+                            np.asarray(item_similarity_lsa_agg)[np.triu_indices(len(item_similarity_lsa), k=1)]]).T),
+    columns=['LSA dvec', 'LSA avg', 'LSA agg'])
+print("Pearson correlation item-vectors LSA from document-vectors and from term-vector average.")
+print(pearsonr(np.asarray(item_vectors_lsa_dvec).flatten(), np.asarray(item_vectors_lsa_avg).flatten()))
+print("Correlation table for item similarity methods.")
+print(item_similarity_methods.corr())
+plt.scatter(np.asarray(item_vectors_lsa_dvec).flatten(), np.asarray(item_vectors_lsa_avg).flatten())
 
 # Compute construct similarity matrix with pre-trained GloVe on item corpus.
 print("Computing construct similarity matrix with pre-trained GloVe...")
@@ -800,18 +876,23 @@ print("ROC AUC pre-trained GloVe =", roc_auc_preglove, "\n")
 
 # Compute construct similarity matrix with self-trained GloVe on item corpus.
 print("Computing construct similarity matrix with self-trained GloVe...")
-vector_dict_trglove, loss_glove = train_vectors_glove(ttd_items, n_components=300, alpha=0.75, x_max=100.0,
-                                                      step_size=0.05, n_epochs=25, batch_size=64, workers=2,
-                                                      verbose=verbose)  # Train vectors.
+vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=0.75, x_max=100.0,
+                                                            step_size=0.15, n_epochs=25, batch_size=64, workers=2,
+                                                            verbose=verbose)  # Train vectors.
 if verbose:
     plt.figure()
-    plt.plot(range(len(loss_glove)), loss_glove)
+    plt.plot(range(len(loss_glove_items)), loss_glove_items)
     plt.legend(["GloVe training loss"])
     plt.show()
 vector_dict_trglove = {dict_ix_term_items[key]: value for key, value in
                        vector_dict_trglove.items()}  # Translate indices.
 term_vectors_trglove = term_vectors_from_dict(vector_dict_trglove, terms_items, normalize=True, verbose=verbose)
-item_similarity_trglove = aggregate_item_similarity(dtm_items, term_vectors_trglove, n_similarities=2, verbose=verbose)
+item_vectors_trglove = vector_average(dtm_items, term_vectors_trglove, weighting=False)
+item_similarity_trglove = pd.DataFrame(np.asarray(
+    np.asmatrix(item_vectors_trglove) * np.asmatrix(item_vectors_trglove).T),
+    index=item_vectors_trglove.index.values, columns=item_vectors_trglove.index.values)
+# item_similarity_trglove = aggregate_item_similarity(dtm_items, term_vectors_trglove, n_similarities=2,
+#                                                     verbose=verbose)
 construct_similarity_trglove = aggregate_construct_similarity(item_similarity_trglove, gold_items, variable_ids,
                                                               n_similarities=2, verbose=verbose)
 fpr_trglove, tpr_trglove, roc_auc_trglove = evaluate(construct_similarity_trglove, construct_identity_gold)
@@ -823,7 +904,6 @@ author_similarity = pd.DataFrame(author_similarity, index=corpus_authors, column
 construct_similarity_authors = aggregate_construct_similarity(author_similarity, gold_items, var_ids_authors,
                                                               construct_authors=construct_authors,
                                                               n_similarities=2, verbose=verbose)
-construct_identity_gold_authors = construct_identity_gold.loc[var_ids_authors, var_ids_authors]
 fpr_auth, tpr_auth, roc_auc_auth = evaluate(construct_similarity_authors,
                                             construct_identity_gold_authors)
 print("ROC AUC authors =", roc_auc_auth, "\n")
@@ -836,28 +916,44 @@ print("Pearson correlation and significance between LSA on items and co-occurr a
 # TODO (cntd.): gives above 0.5 performance. Using unique authors as corpus increases correlation but
 # TODO (cntd.): degrades performance.
 # Compute construct similarity matrix with LSA on author corpus.
-var_ids_authors = np.sort(list(gold2funk.keys()))
 vector_dict_lsa_authors, coauthors_vectors_lsa = train_vectors_lsa(dtm_authors, n_components=100,
                                                                    return_doc_vectors=True)
-author_similarity_lsa = pd.DataFrame(np.asarray(coauthors_vectors_lsa).dot(coauthors_vectors_lsa.T),
-                                     index=coauthors_vectors_lsa.index.values,
-                                     columns=coauthors_vectors_lsa.index.values)
+coauthor_similarity_lsa = pd.DataFrame(np.asarray(coauthors_vectors_lsa).dot(coauthors_vectors_lsa.T),
+                                       index=coauthors_vectors_lsa.index.values,
+                                       columns=coauthors_vectors_lsa.index.values)
 # author_vectors_lsa = term_vectors_from_dict(vector_dict_lsa_authors, terms_authors, normalize=True, verbose=verbose)
-# author_similarity_lsa = pd.DataFrame(aggregate_item_similarity(dtm_authors, author_vectors_lsa,
+# coauthor_similarity_lsa = pd.DataFrame(aggregate_item_similarity(dtm_authors, author_vectors_lsa,
 #                                                                n_similarities=2, verbose=verbose),
 #                                      index=dtm_authors.index.values, columns=dtm_authors.index.values)
-construct_similarity_lsa_authors = aggregate_construct_similarity(author_similarity_lsa, gold_items, var_ids_authors,
+construct_similarity_lsa_authors = aggregate_construct_similarity(coauthor_similarity_lsa, gold_items, var_ids_authors,
                                                                   construct_authors=construct_authors,
                                                                   n_similarities=2, verbose=verbose)
-construct_identity_gold_authors = construct_identity_gold.loc[var_ids_authors, var_ids_authors]
-# Pearson correlation coefficient between construct similarity computed with reduced LSA items and with LSA authors.
 fpr_lsa_auth, tpr_lsa_auth, roc_auc_lsa_auth = evaluate(construct_similarity_lsa_authors,
                                                         construct_identity_gold_authors)
 print("ROC AUC LSA authors =", roc_auc_lsa_auth, "\n")
 triu_indices = np.triu_indices(len(var_ids_authors), k=1)
+# Pearson correlation coefficient between construct similarity computed with reduced LSA items and with LSA authors.
 print("Pearson correlation and significance between LSA on items and LSA on authors:\n",
       pearsonr(np.asarray(construct_similarity_lsa.loc[var_ids_authors, var_ids_authors])[triu_indices],
                np.asarray(construct_similarity_lsa_authors)[triu_indices]), "\n")
+
+# Compute construct similarity matrix with GloVe on author corpus. Does item-aggregation work with authors?
+vector_dict_glove_authors, loss_glove_authors = train_vectors_glove(ttd_authors, n_components=100, alpha=0.75,
+                                                                    x_max=100.0, step_size=0.05, n_epochs=25,
+                                                                    batch_size=64, workers=2, verbose=verbose)
+vector_dict_glove_authors = {dict_ix_term_authors[key]: value for key, value in
+                             vector_dict_glove_authors.items()}  # Translate indices.
+author_vectors_glove = term_vectors_from_dict(vector_dict_glove_authors, terms_authors, normalize=True, verbose=verbose)
+coauthor_similarity_glove = pd.DataFrame(aggregate_item_similarity(dtm_authors, author_vectors_glove,
+                                                                   n_similarities=2, verbose=verbose),
+                                         index=dtm_authors.index.values, columns=dtm_authors.index.values)
+construct_similarity_glove_authors = aggregate_construct_similarity(coauthor_similarity_glove, gold_items,
+                                                                    var_ids_authors,
+                                                                    construct_authors=construct_authors,
+                                                                    n_similarities=2, verbose=verbose)
+fpr_glove_auth, tpr_glove_auth, roc_auc_glove_auth = evaluate(construct_similarity_glove_authors,
+                                                              construct_identity_gold_authors)
+print("ROC AUC GloVe authors =", roc_auc_glove_auth, "\n")
 
 # Perform linear regression on self-trained GloVe.
 lin_reg_trglove_X = np.asarray(np.asarray(construct_similarity_trglove)[triu_indices]).reshape(-1, 1)
