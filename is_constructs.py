@@ -163,8 +163,8 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
             print("Creating construct ID translation dictionary:", ctr / len(funk_construct_ids) * 100, "%",
                   flush=True)
     if verbose:
-        print("Related", len(funk_construct_ids), "Funk constructs to", len(gold_construct_ids), "gold constructs.\n",
-              len(funk2gold), "matches found with Levenshtein distance <=", max_editdistance, "\n")
+        print("Related", len(funk_construct_ids), "Funk constructs to", len(gold_construct_ids), "gold constructs.")
+        print(len(funk2gold), "matches found with Levenshtein distance <=", max_editdistance, "\n")
     gold2funk = {g: f for f, g in funk2gold.items()}
 
     # Get authors of the constructs in Funk's dataset.
@@ -326,6 +326,7 @@ def term_term_cooccurrence(dt_matrix, verbose=False):
     tt_matrix = pd.DataFrame(tt_matrix, index=terms_ix, columns=terms_ix)
     # Convert term-term co-occurrence matrix to sparse term-term co-occurrence dictionary.
     tt_dict = {i: {} for i in range(len(terms_ix))}
+    ctr = 0
     for i in terms_ix:
         for k in terms_ix:
             if tt_matrix[i][k] != 0:
@@ -333,10 +334,11 @@ def term_term_cooccurrence(dt_matrix, verbose=False):
                     tt_dict[i][k] += float(tt_matrix[i][k])
                 except KeyError:
                     tt_dict[i][k] = float(tt_matrix[i][k])
-        if verbose and i % 300 == 0:
-            print("Building term-term cooccurrence dictionary:", i / len(terms_ix) * 100, "%", flush=True)
-    if verbose:
-        print("\n")
+        ctr += 1
+        if verbose and ctr % 300 == 0:
+            print("Building term-term cooccurrence dictionary:", ctr / len(terms_ix) * 100, "%", flush=True)
+    # if verbose:
+    #     print("\n")
     return tt_dict, dict_term_ix, dict_ix_term
 
 
@@ -372,7 +374,7 @@ def term_vectors_from_dict(vector_dict, target_terms, normalize=True, verbose=Fa
             ctr_oov += 1
         i += 1
     if verbose:
-        print("Created term vectors from dictionary.", ctr_oov, "OOV words.", "\n")
+        print("Created term vectors from dictionary.", ctr_oov, "OOV words.")
     if normalize:
         term_vectors = Normalizer(norm='l2', copy=True).fit_transform(term_vectors)
     term_vectors = pd.DataFrame(term_vectors, index=target_terms)
@@ -468,8 +470,8 @@ def load_term_vectors_glove(file_name, target_terms, parser_config=None, new_red
                 print("Creating GloVe vector dictionary of relevant terms...", ctr / len(target_terms) * 100, "%",
                       end="\r")
         np.save(file_name[:-4] + '_reduced.npy', vector_dict)
-    if verbose:
-        print("\n")
+    # if verbose:
+    #     print("\n")
     return vector_dict
 
 
@@ -510,8 +512,8 @@ def train_vectors_glove(tt_dict, n_components=300, alpha=0.75, x_max=100.0, step
         epoch_loss.append(error)
         if verbose:
             print("GloVe training epoch %d, error %.5f" % (epoch + 1, error), flush=True)
-    if verbose:
-        print("\n")
+    # if verbose:
+    #     print("\n")
     vector_matrix = model.W
     vector_dict = {ix: list(vector_matrix[ix]) for ix in tt_dict.keys()}
     return vector_dict, np.asarray(epoch_loss)
@@ -720,8 +722,8 @@ def aggregate_construct_similarity(constituent_similarity, gold_items, variable_
             if verbose and ctr % 5000 == 0:
                 print("Aggregating constituent to construct similarity...", ctr / n_fields * 100, "%", end='\r')
     construct_similarity = pd.DataFrame(construct_similarity, index=variable_ids, columns=variable_ids)
-    if verbose:
-        print("\n")
+    # if verbose:
+    #     print("\n")
     return construct_similarity
 
 
@@ -843,6 +845,7 @@ fpr_lsa, tpr_lsa, roc_auc_lsa = evaluate(construct_similarity_lsa, construct_ide
 print("ROC AUC LSA =", roc_auc_lsa, "\n")
 
 # Compare item vector and item similarity aggregation methods.
+# TODO: include new result with weighted vector averaging
 term_vectors_lsa = term_vectors_from_dict(vector_dict_lsa, terms_items, normalize=True, verbose=verbose)
 item_vectors_lsa_dvec = item_vectors_lsa
 item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, weighting=False)
@@ -874,10 +877,64 @@ construct_similarity_preglove = aggregate_construct_similarity(item_similarity_p
 fpr_preglove, tpr_preglove, roc_auc_preglove = evaluate(construct_similarity_preglove, construct_identity_gold)
 print("ROC AUC pre-trained GloVe =", roc_auc_preglove, "\n")
 
+# Perform grid search on GloVe self-trained on item corpus with unweighted vector average for speed.
+# You can train GloVe with best parameters and item similarity aggregation instead of vector average afterwards.
+glove_results = []
+search_alpha = [0.6, 0.7, 0.8]
+search_x_max = [25, 75, 90]
+search_step_size = [0.01, 0.25, 0.75]
+search_n_epochs = [15, 25, 50]
+search_weighting = [False]
+search_grid = [[alpha, x_max, step_size, n_epochs, weighting] for alpha in search_alpha for x_max in search_x_max
+               for step_size in search_step_size for n_epochs in search_n_epochs for weighting in search_weighting]
+search_early_stopping = 0.99  # ROC AUC for early stopping of grid search.
+ctr = 0
+print("Performing grid search on GloVe self-trained on item corpus...\n")
+for alpha, x_max, step_size, n_epochs, weighting in search_grid:
+    try:
+        print("alpha =", alpha, "x_max =", x_max, "step_size =", step_size,
+              "n_epochs =", n_epochs, "weighting =", weighting)
+        vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=alpha, x_max=x_max,
+                                                                    step_size=step_size, n_epochs=n_epochs, batch_size=64,
+                                                                    workers=2, verbose=verbose)  # Train vectors.
+        if np.sum(np.isnan(loss_glove_items)) > 0:
+            print("Encountered nan loss with following parameters:")
+            print("alpha =", alpha, "x_max =", x_max, "step_size =", step_size,
+                  "n_epochs =", n_epochs, "weighting =", weighting, "\n")
+            continue
+        vector_dict_trglove = {dict_ix_term_items[key]: value for key, value in
+                               vector_dict_trglove.items()}  # Translate indices.
+        term_vectors_trglove = term_vectors_from_dict(vector_dict_trglove, terms_items, normalize=True, verbose=verbose)
+        item_vectors_trglove = vector_average(dtm_items, term_vectors_trglove, weighting=weighting)
+        item_similarity_trglove = pd.DataFrame(np.asarray(
+            np.asmatrix(item_vectors_trglove) * np.asmatrix(item_vectors_trglove).T),
+            index=item_vectors_trglove.index.values, columns=item_vectors_trglove.index.values)
+        construct_similarity_trglove = aggregate_construct_similarity(item_similarity_trglove, gold_items, variable_ids,
+                                                                      n_similarities=2, verbose=verbose)
+        fpr_trglove, tpr_trglove, roc_auc_trglove = evaluate(construct_similarity_trglove, construct_identity_gold)
+        ctr += 1
+        print("Result for GloVe with alpha =", alpha, "x_max =", x_max, "step_size =", step_size,
+              "n_epochs =", n_epochs, "weighting =", weighting)
+        print("ROC AUC =", roc_auc_trglove, "GloVe training loss =", loss_glove_items[-1], "\n")
+        print("Grid search on GloVe.", ctr / len(search_grid) * 100, "%\n")
+        glove_results.append([alpha, x_max, step_size, n_epochs, weighting, roc_auc_trglove, loss_glove_items[-1]])
+        if roc_auc_trglove >= search_early_stopping:
+            print("Early stopping: ROC AUC", roc_auc_trglove, ">=", search_early_stopping)
+            break
+    except:
+        print("Encountered some error. Continuing search with next parameter set...\n")
+        continue
+print("Grid search results:")
+print(np.asarray(glove_results))
+# TODO: save as pd DataFrame with column labels
+print("Best result:\n")
+print(np.asarray(glove_results)[np.where(np.asarray(glove_results)[:, -2] == np.max(np.asarray(glove_results)[:, -2]))])
+np.save('GloVe_search_results.npy', np.asarray(glove_results))  # Truth values are converted to int.
+
 # Compute construct similarity matrix with self-trained GloVe on item corpus.
 print("Computing construct similarity matrix with self-trained GloVe...")
-vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=0.75, x_max=100.0,
-                                                            step_size=0.15, n_epochs=25, batch_size=64, workers=2,
+vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=0.3, x_max=10.0,
+                                                            step_size=0.05, n_epochs=15, batch_size=64, workers=2,
                                                             verbose=verbose)  # Train vectors.
 if verbose:
     plt.figure()
@@ -887,12 +944,12 @@ if verbose:
 vector_dict_trglove = {dict_ix_term_items[key]: value for key, value in
                        vector_dict_trglove.items()}  # Translate indices.
 term_vectors_trglove = term_vectors_from_dict(vector_dict_trglove, terms_items, normalize=True, verbose=verbose)
+# item_similarity_trglove = aggregate_item_similarity(dtm_items, term_vectors_trglove, n_similarities=2,
+#                                                     verbose=verbose)
 item_vectors_trglove = vector_average(dtm_items, term_vectors_trglove, weighting=False)
 item_similarity_trglove = pd.DataFrame(np.asarray(
     np.asmatrix(item_vectors_trglove) * np.asmatrix(item_vectors_trglove).T),
     index=item_vectors_trglove.index.values, columns=item_vectors_trglove.index.values)
-# item_similarity_trglove = aggregate_item_similarity(dtm_items, term_vectors_trglove, n_similarities=2,
-#                                                     verbose=verbose)
 construct_similarity_trglove = aggregate_construct_similarity(item_similarity_trglove, gold_items, variable_ids,
                                                               n_similarities=2, verbose=verbose)
 fpr_trglove, tpr_trglove, roc_auc_trglove = evaluate(construct_similarity_trglove, construct_identity_gold)
@@ -1053,39 +1110,6 @@ if verbose:
 # TODO: ---------------- ARCHIVE ----------------
 
 
-def items_vector_average_glove(dtm_identifier, vector_dict, denominator=None):
-    # TODO: completely out of date
-    """Translate items into pre-trained GloVe vector space and returns the matrix of item vectors. Sums term
-    vectors of terms in item with passed document-term matrix as weighting factor and divides vector according
-    to passed denominator mode."""
-    # Translate items into GloVe vectors.
-    # Implementation checked manually, but there are multiple ways of doing this.
-    dt_matrix = dtm_items[dtm_identifier]
-    item_vectors = np.zeros([len(dt_matrix), len(next(iter(vector_dict.values())))])
-    for row_ind in range(len(dt_matrix)):
-        ctr_oov = 0
-        value_oov = 0
-        for col_ind in range(len(dt_matrix[0])):
-            if np.nonzero(dt_matrix[row_ind, col_ind]):
-                try:
-                    item_vectors[row_ind] = np.add(item_vectors[row_ind],
-                                                   np.asarray(vector_dict[terms_items[col_ind]])
-                                                   * dt_matrix[row_ind, col_ind])
-                except KeyError:
-                    ctr_oov += 1
-                    value_oov += dt_matrix[row_ind, col_ind]
-        # TODO: Some error, probably created in the following lines. Test this part of the function.
-        item_vectors[row_ind] = {
-            'sum': item_vectors[row_ind] / (np.sum(dt_matrix[row_ind])),
-            'sum_value-oov': item_vectors[row_ind] / (np.sum(dt_matrix[row_ind]) - value_oov),
-            'norm': item_vectors[row_ind] / (np.linalg.norm(dt_matrix[row_ind])),
-            'norm_value-oov': item_vectors[row_ind] / (np.linalg.norm(dt_matrix[row_ind]) - value_oov)
-        }.get(denominator, item_vectors[row_ind])
-        if row_ind % 250 == 0:
-            print("Translating items into GloVe vectors.", (row_ind + 1) / len(dt_matrix) * 100, "%", end="\r")
-    return item_vectors
-
-
 def term_term_cooccurrence_scratch(corpus):
     """Creates sparse term-term cooccurrence dictionary from passed corpus. Compared to using the dot product
     of the dt_matrix, this implementation has the disadvantage of being harder to normalize."""
@@ -1121,23 +1145,3 @@ def test_ttcs():
     info(result_2)
     info(result_3)
 
-
-# NOTES: Load the results from 'GloVe_search_results.npy'. Best results around 0.63.
-# Parameter search for GloVe document projection by weighted item vectors.
-# Uses old item_vectors_glove(...) function.
-denominator_options = [None, 'sum', 'sum_value-oov', 'norm', 'norm_value-oov']
-grid = [[mat, den] for mat in dtm_items for den in denominator_options]
-# grid = [['dt_matrix', None], ['dt_matrix', 'sum']]
-glove_results = []
-ctr = 0
-print("Performing grid search on GloVe.")
-for dtm_identifier, denominator in grid:
-    item_vectors = items_vector_average_glove(dtm_identifier, denominator=denominator)
-construct_similarity_preglove = np.nan_to_num(aggregate_construct_similarity(item_vectors))
-fpr_preglove, tpr_preglove, roc_auc_preglove = evaluate(construct_similarity_preglove)
-glove_results.append([dtm_identifier, denominator, roc_auc_preglove])
-ctr += 1
-print("New GloVe search result:", dtm_identifier, denominator, roc_auc_preglove)
-print("Grid search on GloVe.", ctr / len(grid) * 100, "%\n")
-np.save('GloVe_search_results.npy', np.asarray(glove_results))
-glove_results = np.load('GloVe_search_results.npy')
