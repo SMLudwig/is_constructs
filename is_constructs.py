@@ -879,11 +879,14 @@ print("ROC AUC pre-trained GloVe =", roc_auc_preglove, "\n")
 
 # Perform grid search on GloVe self-trained on item corpus with unweighted vector average for speed.
 # You can train GloVe with best parameters and item similarity aggregation instead of vector average afterwards.
-glove_results = []
-search_alpha = [0.6, 0.7, 0.8]
-search_x_max = [25, 75, 90]
-search_step_size = [0.01, 0.25, 0.75]
-search_n_epochs = [15, 25, 50]
+try:
+    glove_results = pd.read_csv('GloVe_search_results.csv', index_col=0).values.tolist()
+except FileNotFoundError:
+    glove_results = []
+search_alpha = [0.55, 0.575, 0.625, 0.65]
+search_x_max = [20, 30, 70, 80]
+search_step_size = [0.001, 0.0025, 0.005, 0.0075]
+search_n_epochs = [75]
 search_weighting = [False]
 search_grid = [[alpha, x_max, step_size, n_epochs, weighting] for alpha in search_alpha for x_max in search_x_max
                for step_size in search_step_size for n_epochs in search_n_epochs for weighting in search_weighting]
@@ -894,8 +897,10 @@ for alpha, x_max, step_size, n_epochs, weighting in search_grid:
     try:
         print("alpha =", alpha, "x_max =", x_max, "step_size =", step_size,
               "n_epochs =", n_epochs, "weighting =", weighting)
-        vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=alpha, x_max=x_max,
-                                                                    step_size=step_size, n_epochs=n_epochs, batch_size=64,
+        vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=alpha,
+                                                                    x_max=x_max,
+                                                                    step_size=step_size, n_epochs=n_epochs,
+                                                                    batch_size=64,
                                                                     workers=2, verbose=verbose)  # Train vectors.
         if np.sum(np.isnan(loss_glove_items)) > 0:
             print("Encountered nan loss with following parameters:")
@@ -925,28 +930,77 @@ for alpha, x_max, step_size, n_epochs, weighting in search_grid:
         print("Encountered some error. Continuing search with next parameter set...\n")
         continue
 print("Grid search results:")
-print(np.asarray(glove_results))
-# TODO: save as pd DataFrame with column labels
+glove_results = pd.DataFrame(np.asarray(glove_results), columns=['alpha', 'x_max', 'step_size', 'n_epochs',
+                                                                 'weighting', 'roc_auc', 'training_loss'])
+print(glove_results)
+glove_results_best = pd.DataFrame(
+    np.asarray(glove_results)[np.where(np.asarray(glove_results)[:, -2] == np.max(np.asarray(glove_results)[:, -2]))],
+    columns=['alpha', 'x_max', 'step_size', 'n_epochs', 'weighting', 'roc_auc', 'training_loss'])
 print("Best result:\n")
-print(np.asarray(glove_results)[np.where(np.asarray(glove_results)[:, -2] == np.max(np.asarray(glove_results)[:, -2]))])
-np.save('GloVe_search_results.npy', np.asarray(glove_results))  # Truth values are converted to int.
+print(glove_results_best)
+glove_results.to_csv('GloVe_search_results.csv')
+
+# Plot GloVe grid search results.
+if verbose:
+    plt.figure(figsize=(10, 6))
+    x_plt = np.unique(glove_results['alpha'])
+    y_plt = [np.mean(glove_results.loc[glove_results['alpha'].isin([x]), 'roc_auc']) for x in x_plt]
+    plt.subplot(2, 3, 1)
+    plt.plot(x_plt, y_plt)
+    plt.xlabel('alpha')
+    plt.ylabel('mean roc_auc')
+    x_plt = np.unique(glove_results['x_max'])
+    y_plt = [np.mean(glove_results.loc[glove_results['x_max'].isin([x]), 'roc_auc']) for x in x_plt]
+    plt.subplot(2, 3, 2)
+    plt.plot(x_plt, y_plt)
+    plt.xlabel('x_max')
+    plt.ylabel('mean roc_auc')
+    plt.title('GloVe prototype hyperparameter search')
+    x_plt = np.unique(glove_results['step_size'])
+    y_plt = [np.mean(glove_results.loc[glove_results['step_size'].isin([x]), 'roc_auc']) for x in x_plt]
+    plt.subplot(2, 3, 3)
+    plt.plot(x_plt, y_plt)
+    plt.xlabel('step_size')
+    plt.ylabel('mean roc_auc')
+    x_plt = np.unique(glove_results['n_epochs'])
+    y_plt = [np.mean(glove_results.loc[glove_results['n_epochs'].isin([x]), 'roc_auc']) for x in x_plt]
+    plt.subplot(2, 3, 4)
+    plt.plot(x_plt, y_plt)
+    plt.xlabel('n_epochs')
+    plt.ylabel('mean roc_auc')
+    x_plt = np.unique(glove_results['weighting'])
+    y_plt = [np.mean(glove_results.loc[glove_results['weighting'].isin([x]), 'roc_auc']) for x in x_plt]
+    plt.subplot(2, 3, 5)
+    plt.bar(x_plt, y_plt)
+    plt.xlabel('weighting')
+    plt.ylabel('mean roc_auc')
+    # x_plt = np.unique(glove_results['training_loss'])
+    # y_plt = [np.mean(glove_results.loc[glove_results['training_loss'].isin([x]), 'roc_auc']) for x in x_plt]
+    # plt.plot(x_plt, y_plt)
+    # plt.xlabel('training_loss')
+    # plt.ylabel('mean roc_auc')
+    plt.subplots_adjust(wspace=0.3, hspace=0.4)
+    plt.show(block=False)
 
 # Compute construct similarity matrix with self-trained GloVe on item corpus.
 print("Computing construct similarity matrix with self-trained GloVe...")
-vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=0.3, x_max=10.0,
-                                                            step_size=0.05, n_epochs=15, batch_size=64, workers=2,
+glove_aggregation = True
+vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=0.6, x_max=75.0,
+                                                            step_size=0.01, n_epochs=50, batch_size=64, workers=2,
                                                             verbose=verbose)  # Train vectors.
 if verbose:
     plt.figure()
-    plt.plot(range(len(loss_glove_items)), loss_glove_items)
-    plt.legend(["GloVe training loss"])
-    plt.show()
+plt.plot(range(len(loss_glove_items)), loss_glove_items)
+plt.legend(["GloVe training loss"])
+# plt.show()
 vector_dict_trglove = {dict_ix_term_items[key]: value for key, value in
                        vector_dict_trglove.items()}  # Translate indices.
 term_vectors_trglove = term_vectors_from_dict(vector_dict_trglove, terms_items, normalize=True, verbose=verbose)
-# item_similarity_trglove = aggregate_item_similarity(dtm_items, term_vectors_trglove, n_similarities=2,
-#                                                     verbose=verbose)
-item_vectors_trglove = vector_average(dtm_items, term_vectors_trglove, weighting=False)
+if glove_aggregation:
+    item_similarity_trglove = aggregate_item_similarity(dtm_items, term_vectors_trglove, n_similarities=2,
+                                                        verbose=verbose)
+else:
+    item_vectors_trglove = vector_average(dtm_items, term_vectors_trglove, weighting=False)
 item_similarity_trglove = pd.DataFrame(np.asarray(
     np.asmatrix(item_vectors_trglove) * np.asmatrix(item_vectors_trglove).T),
     index=item_vectors_trglove.index.values, columns=item_vectors_trglove.index.values)
@@ -1092,18 +1146,18 @@ print(all_similarity_correlations, "\n")
 if verbose:
     # Plot ROC curves.
     plt.figure()
-    plt.grid(True)
-    plt.plot(fpr_lsa, tpr_lsa)
-    plt.plot(fpr_preglove, tpr_preglove)
-    plt.plot(fpr_trglove, tpr_trglove)
-    plt.plot(fpr_auth, tpr_auth)
-    plt.plot(fpr_lsa_auth, tpr_lsa_auth)
-    plt.plot(fpr_mean_all, tpr_mean_all)
-    plt.plot(fpr_log_all, tpr_log_all)
-    plt.xlabel("False Positive Rate (FPR)")
-    plt.ylabel("True Positive Rate (TPR)")
-    plt.legend(["LSA", "preGloVe", "trGloVe", "authors", "LSA authors", "mean all", "log-reg all"])
-    plt.show()
+plt.grid(True)
+plt.plot(fpr_lsa, tpr_lsa)
+plt.plot(fpr_preglove, tpr_preglove)
+plt.plot(fpr_trglove, tpr_trglove)
+plt.plot(fpr_auth, tpr_auth)
+plt.plot(fpr_lsa_auth, tpr_lsa_auth)
+plt.plot(fpr_mean_all, tpr_mean_all)
+plt.plot(fpr_log_all, tpr_log_all)
+plt.xlabel("False Positive Rate (FPR)")
+plt.ylabel("True Positive Rate (TPR)")
+plt.legend(["LSA", "preGloVe", "trGloVe", "authors", "LSA authors", "mean all", "log-reg all"])
+plt.show()
 
 
 # TODO: -----------------------------------------
@@ -1144,4 +1198,3 @@ def test_ttcs():
     info(result_1)
     info(result_2)
     info(result_3)
-
