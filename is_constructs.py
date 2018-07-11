@@ -18,6 +18,7 @@ import pandas as pd
 import editdistance
 import glove
 import csv
+import os.path
 import warnings
 import matplotlib.pyplot as plt
 
@@ -446,33 +447,42 @@ def test_ttvlsa():
     info(result_2)
 
 
-def load_term_vectors_glove(file_name, target_terms, parser_config=None, new_reduce_dict=False, verbose=False):
+def load_term_vectors_glove(file_name, target_terms, new_reduce_dict=False,
+                            ignore_chars='''.,:;"'!?_-/()[]{}&%0123456789''', verbose=False):
     """Loads pre-trained GloVe term vectors from file. If option new_reduce_dict=True, load full dictionary and
-    reduce it to the passed target_terms, save reduced dict to .npy file. Option to use parser_config to parse
-    dictionary keys, but this currently results in multiple vectors being returned for the same stemmed word."""
-    # Implementation checked 28 June.
+    reduce it to the passed target_terms, save reduced dict to .npy file."""
+    # Implementation unchecked.
     if not new_reduce_dict:
         vector_dict = np.load(file_name).item()
     else:
         print("Creating GloVe vector-dictionary of relevant terms from full vector file...")
-        # Load full pre-trained GloVe vector dictionary and extract relevant term vectors.
-        with open(file_name, 'r') as file:
-            vectors_full = pd.read_table(file, sep=' ', index_col=0, header=None, quoting=csv.QUOTE_NONE)
-        if verbose:
-            print("Full GloVe vector file loaded as Pandas DataFrame.")
-        # Parse keys of the GloVe vectors with the same parser configuration used on the corpus.
-        vectors_full.index = pd.Series(vectors_full.index).replace(np.nan, 'nan')
-        # TODO: parsing keys results in multiple vectors being returned for the same term
-        if parser_config is not None:
-            vectors_full.index = pd.Series(parse_text(vectors_full.index.values, stemmer=parser_config['stemmer'],
-                                                      lower=parser_config['lower'], verbose=False,
-                                                      return_config=False, remove_stop_words=False,
-                                                      ignore_chars=''))
+        if not os.path.isfile(file_name[:-4] + '.h5'):
+            print("No HDF5 file found. Creating new file...")
+            # Convert full vector file to pandas hdf5 file.
+            hdf = pd.HDFStore(file_name[:-4] + '.h5')
+            for chunk in pd.read_table(file_name, chunksize=100000, sep=' ', index_col=0,
+                                       quoting=csv.QUOTE_NONE):
+                for i in chunk.index.values:
+                    if i in ignore_chars:  # Skip ignore characters like '/', '.', ...
+                        continue
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')  # Some NaturalNameWarnings for names like 'and', 'in', ...
+                        try:
+                            hdf.put(i, chunk.loc[i])
+                        except ValueError:
+                            if verbose:
+                                print("ValueError encountered for", i)
+                            continue
+            if verbose:
+                print("Full GloVe vector file converted to pandas HDF5 file.")
+
+        # TODO: load HDF5 or read properly from existing.
+
         vector_dict = {}
         ctr = 0
         for term in target_terms:
             try:
-                vector_dict[term] = vectors_full.loc[term]
+                vector_dict[term] = pd.read_hdf(file_name[:-4] + '.h5', key=term)
             except KeyError:
                 continue  # deal with out of vocabulary words in term_vectors_from_dict(...)
             ctr += 1
@@ -480,8 +490,7 @@ def load_term_vectors_glove(file_name, target_terms, parser_config=None, new_red
                 print("Creating GloVe vector dictionary of relevant terms...", ctr / len(target_terms) * 100, "%",
                       end="\r")
         np.save(file_name[:-4] + '_reduced.npy', vector_dict)
-    # if verbose:
-    #     print("\n")
+        hdf.close()
     return vector_dict
 
 
@@ -489,13 +498,9 @@ def test_ltvg():
     file_name = 'glove-pre-trained/glove.6B.50d.txt'
     target_terms = np.asarray(['advanc', 'don', 'great', 'it', 'like', 'mari', 'question', 'sir', 'situat',
                                'technolog', 'that', 'yes'])
-    parser_config = {'stemmer': 'porter2', 'lower': True, 'remove_stop_words': True,
-                     'ignore_chars': '''.,:;"'!?-/()[]{}0123456789'''}
-    parser_config = None
     new_reduce_dict = True
     verbose = True
-    result = load_term_vectors_glove(file_name, target_terms, parser_config=parser_config,
-                                     new_reduce_dict=new_reduce_dict, verbose=verbose)
+    result = load_term_vectors_glove(file_name, target_terms, new_reduce_dict=new_reduce_dict, verbose=verbose)
     print(result, "\n")
     info(result)
 
@@ -734,8 +739,6 @@ def aggregate_construct_similarity(constituent_similarity, gold_items, variable_
     # Set nan values to 0. Origin unknown.
     construct_similarity = np.nan_to_num(construct_similarity)
     construct_similarity = pd.DataFrame(construct_similarity, index=variable_ids, columns=variable_ids)
-    # if verbose:
-    #     print("\n")
     return construct_similarity
 
 
@@ -806,7 +809,8 @@ prototype = False
 stemmer = 'porter2'
 ignore_chars = '''.,:;"'!?_-/()[]{}&%0123456789'''
 dtm_processing = 'tfidf_l2'
-use_doc_vectors_lsa = True
+glove_pretrained_filename = 'glove-pre-trained/glove.6B.300d.txt'
+glove_new_reduce_dict = False
 verbose = True
 
 # Load data.
@@ -840,17 +844,24 @@ ttd_authors, dict_term_ix_authors, dict_ix_term_authors = term_term_cooccurrence
 
 # Compute construct similarity matrix with LSA on item corpus.
 print("Computing construct similarity matrix with LSA...")
+use_doc_vectors_lsa = True
+lsa_aggregation = False
 vector_dict_lsa, item_vectors_lsa = train_vectors_lsa(dtm_items, n_components=300, return_doc_vectors=True)
 if use_doc_vectors_lsa:
+    # Use document-vectors.
     item_similarity_lsa = pd.DataFrame(np.asmatrix(item_vectors_lsa) * np.asmatrix(item_vectors_lsa).T,
                                        index=gold_items, columns=gold_items)
 else:
     term_vectors_lsa = term_vectors_from_dict(vector_dict_lsa, terms_items, normalize=True, verbose=verbose)
-    # item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2, verbose=verbose)
-    item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, weighting=False)
-    item_similarity_lsa = pd.DataFrame(np.asarray(
-        np.asmatrix(item_vectors_lsa_avg) * np.asmatrix(item_vectors_lsa_avg).T),
-        index=item_vectors_lsa_avg.index.values, columns=item_vectors_lsa_avg.index.values)
+    if lsa_aggregation:
+        # Term to item vector aggregation.
+        item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2, verbose=verbose)
+    else:
+        # Term vector averaging.
+        item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, weighting=False)
+        item_similarity_lsa = pd.DataFrame(np.asarray(
+            np.asmatrix(item_vectors_lsa_avg) * np.asmatrix(item_vectors_lsa_avg).T),
+            index=item_vectors_lsa_avg.index.values, columns=item_vectors_lsa_avg.index.values)
 construct_similarity_lsa = aggregate_construct_similarity(item_similarity_lsa, gold_items, variable_ids,
                                                           n_similarities=2, verbose=verbose)
 fpr_lsa, tpr_lsa, roc_auc_lsa = evaluate(construct_similarity_lsa, construct_identity_gold)
@@ -878,9 +889,9 @@ plt.scatter(np.asarray(item_vectors_lsa_dvec).flatten(), np.asarray(item_vectors
 
 # Compute construct similarity matrix with pre-trained GloVe on item corpus.
 print("Computing construct similarity matrix with pre-trained GloVe...")
-vector_dict_preglove = load_term_vectors_glove(file_name='glove-pre-trained/glove.6B.300d.txt',
+vector_dict_preglove = load_term_vectors_glove(file_name=glove_pretrained_filename,
                                                target_terms=terms_items, parser_config=None,
-                                               new_reduce_dict=True, verbose=verbose)
+                                               new_reduce_dict=glove_new_reduce_dict, verbose=verbose)
 term_vectors_preglove = term_vectors_from_dict(vector_dict_preglove, terms_items, normalize=True, verbose=verbose)
 item_similarity_preglove = aggregate_item_similarity(dtm_items, term_vectors_preglove, n_similarities=2,
                                                      verbose=verbose)
@@ -1011,7 +1022,7 @@ if verbose:
 
 # Compute construct similarity matrix with self-trained GloVe on item corpus.
 print("Computing construct similarity matrix with self-trained GloVe...")
-glove_aggregation = False
+glove_aggregation = True
 vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=0.55, x_max=80.0,
                                                             step_size=0.0075, n_epochs=75, batch_size=64, workers=2,
                                                             verbose=verbose)  # Train vectors.
