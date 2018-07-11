@@ -29,10 +29,14 @@ def info(var):
         print("Type:", type(var), "\nLength:", len(var))
 
 
-def recreate_construct_identity_gold(gold_standard, pool_ids):
-    """Translates the gold standard by Larsen and Bong 2016 into a binary construct identity matrix."""
+def recreate_construct_identity_gold(gold_standard, pool_ids, full_var_ids=None):
+    """Translates the gold standard by Larsen and Bong 2016 into a binary construct identity matrix.
+    Pass full_var_ids if not prototyping, since not all variable ids are present in pools."""
     # Implementation checked 28 June.
-    variable_ids = np.sort(np.unique(gold_standard['VariableID'][gold_standard['Poolid'].isin(pool_ids)]))
+    if full_var_ids is not None:
+        variable_ids = full_var_ids
+    else:
+        variable_ids = np.sort(np.unique(gold_standard['VariableID'][gold_standard['Poolid'].isin(pool_ids)]))
     construct_identity_gold = np.zeros([len(variable_ids), len(variable_ids)])
     construct_identity_gold = pd.DataFrame(construct_identity_gold, index=variable_ids, columns=variable_ids)
     for pool_id in pool_ids:
@@ -57,7 +61,8 @@ def test_rcig():
                                   [2, 7],
                                   [2, 8]], columns=['Poolid', 'VariableID'])
     pool_ids = [1, 2]
-    result = recreate_construct_identity_gold(gold_standard, pool_ids)
+    full_var_ids = None
+    result = recreate_construct_identity_gold(gold_standard, pool_ids, full_var_ids=full_var_ids)
     print(result, "\n")
     info(result)
 
@@ -98,7 +103,8 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
         except FileNotFoundError:
             if verbose:
                 print("No construct identity gold matrix file found. Creating new file...")
-            construct_identity_gold = recreate_construct_identity_gold(gold_standard, pool_ids)
+            construct_identity_gold = recreate_construct_identity_gold(gold_standard, pool_ids,
+                                                                       full_var_ids=variable_ids)
             construct_identity_gold.to_pickle('construct_identity_gold.df')
 
     # Load Funk's data on papers and constructs.
@@ -151,13 +157,17 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
     ctr = 0
     for funk_id in funk_construct_ids:
         for gold_id in gold_construct_ids:
-            # Check whether the gold_id has alrady been linked to a funk_id. This can happen with multiple matches.
+            # Check whether the gold_id has already been linked to a funk_id. This can happen with multiple matches.
             if gold_id in funk2gold.values():
                 continue
-            if construct_distances[funk_id][gold_id] <= max_editdistance:
-                funk2gold[funk_id] = gold_id
-                # Break to go to the next funk_id, so that every id gets only matched once.
-                break
+            try:
+                if construct_distances[funk_id][gold_id] <= max_editdistance:
+                    funk2gold[funk_id] = gold_id
+                    # Break to go to the next funk_id, so that every id gets only matched once.
+                    break
+            except KeyError:
+                print("Check whether editdistances were created on prototype or full dataset.")
+                raise
         ctr += 1
         if verbose and ctr % 200 == 0:
             print("Creating construct ID translation dictionary:", ctr / len(funk_construct_ids) * 100, "%",
@@ -719,8 +729,10 @@ def aggregate_construct_similarity(constituent_similarity, gold_items, variable_
             sim_avg = np.average(np.sort(item_sim_sub, axis=None)[-np.max([n_similarities, 2]):])
             construct_similarity[ind_1, ind_2] = sim_avg
             ctr += 1
-            if verbose and ctr % 5000 == 0:
+            if verbose and ctr % 10000 == 0:
                 print("Aggregating constituent to construct similarity...", ctr / n_fields * 100, "%", end='\r')
+    # Set nan values to 0. Origin unknown.
+    construct_similarity = np.nan_to_num(construct_similarity)
     construct_similarity = pd.DataFrame(construct_similarity, index=variable_ids, columns=variable_ids)
     # if verbose:
     #     print("\n")
@@ -790,7 +802,7 @@ def test_e():
 
 
 # Define central parameters.
-prototype = True
+prototype = False
 stemmer = 'porter2'
 ignore_chars = '''.,:;"'!?_-/()[]{}&%0123456789'''
 dtm_processing = 'tfidf_l2'
@@ -933,66 +945,82 @@ print("Grid search results:")
 glove_results = pd.DataFrame(np.asarray(glove_results), columns=['alpha', 'x_max', 'step_size', 'n_epochs',
                                                                  'weighting', 'roc_auc', 'training_loss'])
 print(glove_results)
+# Print best GloVe configuration.
 glove_results_best = pd.DataFrame(
     np.asarray(glove_results)[np.where(np.asarray(glove_results)[:, -2] == np.max(np.asarray(glove_results)[:, -2]))],
     columns=['alpha', 'x_max', 'step_size', 'n_epochs', 'weighting', 'roc_auc', 'training_loss'])
-print("Best result:\n")
-print(glove_results_best)
+print("Best result:")
+print(glove_results_best, "\n")
+# Save grid search results.
 glove_results.to_csv('GloVe_search_results.csv')
 
 # Plot GloVe grid search results.
 if verbose:
     plt.figure(figsize=(10, 6))
+    # Training alpha.
     x_plt = np.unique(glove_results['alpha'])
     y_plt = [np.mean(glove_results.loc[glove_results['alpha'].isin([x]), 'roc_auc']) for x in x_plt]
+    e_plt = [np.std(glove_results.loc[glove_results['alpha'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 1)
-    plt.plot(x_plt, y_plt)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
     plt.xlabel('alpha')
     plt.ylabel('mean roc_auc')
+    # Training x_max.
     x_plt = np.unique(glove_results['x_max'])
     y_plt = [np.mean(glove_results.loc[glove_results['x_max'].isin([x]), 'roc_auc']) for x in x_plt]
+    e_plt = [np.std(glove_results.loc[glove_results['x_max'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 2)
-    plt.plot(x_plt, y_plt)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
     plt.xlabel('x_max')
     plt.ylabel('mean roc_auc')
     plt.title('GloVe prototype hyperparameter search')
+    # Training step size.
     x_plt = np.unique(glove_results['step_size'])
     y_plt = [np.mean(glove_results.loc[glove_results['step_size'].isin([x]), 'roc_auc']) for x in x_plt]
+    e_plt = [np.std(glove_results.loc[glove_results['step_size'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 3)
-    plt.plot(x_plt, y_plt)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
     plt.xlabel('step_size')
     plt.ylabel('mean roc_auc')
+    # Number of training epochs.
     x_plt = np.unique(glove_results['n_epochs'])
     y_plt = [np.mean(glove_results.loc[glove_results['n_epochs'].isin([x]), 'roc_auc']) for x in x_plt]
+    e_plt = [np.std(glove_results.loc[glove_results['n_epochs'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 4)
-    plt.plot(x_plt, y_plt)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
     plt.xlabel('n_epochs')
     plt.ylabel('mean roc_auc')
+    # Weighting in vector averaging.
     x_plt = np.unique(glove_results['weighting'])
     y_plt = [np.mean(glove_results.loc[glove_results['weighting'].isin([x]), 'roc_auc']) for x in x_plt]
+    e_plt = [np.std(glove_results.loc[glove_results['weighting'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 5)
-    plt.bar(x_plt, y_plt)
+    plt.bar(x_plt, y_plt, yerr=e_plt, capsize=4)
+    plt.xlim(-0.5, 1.5)
     plt.xlabel('weighting')
     plt.ylabel('mean roc_auc')
-    # x_plt = np.unique(glove_results['training_loss'])
-    # y_plt = [np.mean(glove_results.loc[glove_results['training_loss'].isin([x]), 'roc_auc']) for x in x_plt]
-    # plt.plot(x_plt, y_plt)
-    # plt.xlabel('training_loss')
-    # plt.ylabel('mean roc_auc')
+    # Vector training loss.
+    x_plt = np.unique(glove_results['training_loss'])
+    y_plt = [np.mean(glove_results.loc[glove_results['training_loss'].isin([x]), 'roc_auc']) for x in x_plt]
+    plt.subplot(2, 3, 6)
+    plt.scatter(x_plt, y_plt)
+    plt.xlabel('training_loss')
+    plt.ylabel('mean roc_auc')
     plt.subplots_adjust(wspace=0.3, hspace=0.4)
     plt.show(block=False)
 
 # Compute construct similarity matrix with self-trained GloVe on item corpus.
 print("Computing construct similarity matrix with self-trained GloVe...")
-glove_aggregation = True
-vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=0.6, x_max=75.0,
-                                                            step_size=0.01, n_epochs=50, batch_size=64, workers=2,
+glove_aggregation = False
+vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=0.55, x_max=80.0,
+                                                            step_size=0.0075, n_epochs=75, batch_size=64, workers=2,
                                                             verbose=verbose)  # Train vectors.
 if verbose:
-    plt.figure()
-plt.plot(range(len(loss_glove_items)), loss_glove_items)
-plt.legend(["GloVe training loss"])
-# plt.show()
+    pass
+    # plt.figure()
+    # plt.plot(range(len(loss_glove_items)), loss_glove_items)
+    # plt.legend(["GloVe training loss"])
+    # plt.show()
 vector_dict_trglove = {dict_ix_term_items[key]: value for key, value in
                        vector_dict_trglove.items()}  # Translate indices.
 term_vectors_trglove = term_vectors_from_dict(vector_dict_trglove, terms_items, normalize=True, verbose=verbose)
@@ -1001,9 +1029,10 @@ if glove_aggregation:
                                                         verbose=verbose)
 else:
     item_vectors_trglove = vector_average(dtm_items, term_vectors_trglove, weighting=False)
-item_similarity_trglove = pd.DataFrame(np.asarray(
-    np.asmatrix(item_vectors_trglove) * np.asmatrix(item_vectors_trglove).T),
-    index=item_vectors_trglove.index.values, columns=item_vectors_trglove.index.values)
+    # Compute item similarity and set negative values to 0.
+    item_similarity_trglove = pd.DataFrame(np.asarray(
+        np.asmatrix(item_vectors_trglove) * np.asmatrix(item_vectors_trglove).T).clip(min=0),
+        index=item_vectors_trglove.index.values, columns=item_vectors_trglove.index.values)
 construct_similarity_trglove = aggregate_construct_similarity(item_similarity_trglove, gold_items, variable_ids,
                                                               n_similarities=2, verbose=verbose)
 fpr_trglove, tpr_trglove, roc_auc_trglove = evaluate(construct_similarity_trglove, construct_identity_gold)
