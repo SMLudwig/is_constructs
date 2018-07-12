@@ -299,8 +299,8 @@ def document_term_cooccurrence(corpus, processing='l2'):
         # Implementation checked manually.
         local_weight_matrix = np.log(dt_matrix + 1)
         p_matrix = np.divide(dt_matrix, np.tile(np.sum(dt_matrix, axis=0), (len(dt_matrix), 1)))
-        log_p_matrix = np.log(p_matrix)
-        log_p_matrix[np.isneginf(log_p_matrix)] = 0
+        log_p_matrix = np.log(p_matrix + 1)  # +1 ? reduced performance slightly, not included in source.
+        log_p_matrix[np.isneginf(log_p_matrix)] = 0  # Deal with inf produced by zero log
         global_weight_matrix = np.tile(1 + np.divide(np.sum(np.multiply(p_matrix, log_p_matrix),
                                                             axis=0), np.log(len(dt_matrix) + 1)), (len(dt_matrix), 1))
         final_weight_matrix = np.multiply(local_weight_matrix, global_weight_matrix)
@@ -457,22 +457,29 @@ def load_term_vectors_glove(file_name, target_terms, new_reduce_dict=False,
     else:
         print("Creating GloVe vector-dictionary of relevant terms from full vector file...")
         if not os.path.isfile(file_name[:-4] + '.h5'):
-            print("No HDF5 file found. Creating new file...")
-            # Convert full vector file to pandas hdf5 file.
-            hdf = pd.HDFStore(file_name[:-4] + '.h5')
-            for chunk in pd.read_table(file_name, chunksize=100000, sep=' ', index_col=0,
-                                       quoting=csv.QUOTE_NONE):
-                for i in chunk.index.values:
-                    if i in ignore_chars:  # Skip ignore characters like '/', '.', ...
-                        continue
-                    with warnings.catch_warnings():
-                        warnings.simplefilter('ignore')  # Some NaturalNameWarnings for names like 'and', 'in', ...
-                        try:
-                            hdf.put(i, chunk.loc[i])
-                        except ValueError:
-                            if verbose:
-                                print("ValueError encountered for", i)
+            # TODO: remove this try, just for debugging.
+            try:
+                print("No HDF5 file found. Creating new file...")
+                # Convert full vector file to pandas hdf5 file.
+                hdf = pd.HDFStore(file_name[:-4] + '.h5')
+                for chunk in pd.read_table(file_name, chunksize=100000, sep=' ', index_col=0,
+                                           quoting=csv.QUOTE_NONE):
+                    for i in chunk.index.values:
+                        if i in ignore_chars:  # Skip ignore characters like '/', '.', ...
                             continue
+                        with warnings.catch_warnings():
+                            warnings.simplefilter('ignore')  # Some NaturalNameWarnings for names like 'and', 'in', ...
+                            try:
+                                hdf.put(i, chunk.loc[i])
+                            except ValueError:
+                                if verbose:
+                                    print("ValueError encountered for", i)
+                                continue
+            except TypeError:
+                print("chunk tail", chunk.tail(5))
+                print("i", i)
+                raise
+
             if verbose:
                 print("Full GloVe vector file converted to pandas HDF5 file.")
 
@@ -808,7 +815,7 @@ def test_e():
 prototype = False
 stemmer = 'porter2'
 ignore_chars = '''.,:;"'!?_-/()[]{}&%0123456789'''
-dtm_processing = 'tfidf_l2'
+dtm_processing = 'tfidf_l2'  # 'count', 'l2', 'tfidf_l2', 'log_l2'
 glove_pretrained_filename = 'glove-pre-trained/glove.6B.300d.txt'
 glove_new_reduce_dict = False
 verbose = True
@@ -829,7 +836,7 @@ corpus_items = parse_text(np.asarray(gold_items['Text']), stemmer=stemmer, lower
 # corpus_abstracts = parse_text(np.asarray(funk_papers['Abstract']), stemmer=stemmer, lower=True,
 #                               remove_stop_words=True, return_config=False,
 #                               ignore_chars=ignore_chars, verbose=True)
-corpus_authors = np.unique(list(construct_authors.values()))  # Options: .asarray or .unique
+corpus_authors = np.unique(list(construct_authors.values()))
 # corpus_ authors = parse_text(np.unique(list(construct_authors.values())), stemmer=None, lower=True,
 #                              remove_stop_words=False, return_config=False,
 #                              ignore_chars=ignore_chars, verbose=True)
@@ -844,7 +851,7 @@ ttd_authors, dict_term_ix_authors, dict_ix_term_authors = term_term_cooccurrence
 
 # Compute construct similarity matrix with LSA on item corpus.
 print("Computing construct similarity matrix with LSA...")
-use_doc_vectors_lsa = True
+use_doc_vectors_lsa = False
 lsa_aggregation = False
 vector_dict_lsa, item_vectors_lsa = train_vectors_lsa(dtm_items, n_components=300, return_doc_vectors=True)
 if use_doc_vectors_lsa:
@@ -890,7 +897,7 @@ plt.scatter(np.asarray(item_vectors_lsa_dvec).flatten(), np.asarray(item_vectors
 # Compute construct similarity matrix with pre-trained GloVe on item corpus.
 print("Computing construct similarity matrix with pre-trained GloVe...")
 vector_dict_preglove = load_term_vectors_glove(file_name=glove_pretrained_filename,
-                                               target_terms=terms_items, parser_config=None,
+                                               target_terms=terms_items,
                                                new_reduce_dict=glove_new_reduce_dict, verbose=verbose)
 term_vectors_preglove = term_vectors_from_dict(vector_dict_preglove, terms_items, normalize=True, verbose=verbose)
 item_similarity_preglove = aggregate_item_similarity(dtm_items, term_vectors_preglove, n_similarities=2,
@@ -906,9 +913,9 @@ try:
     glove_results = pd.read_csv('GloVe_search_results.csv', index_col=0).values.tolist()
 except FileNotFoundError:
     glove_results = []
-search_alpha = [0.55, 0.575, 0.625, 0.65]
-search_x_max = [20, 30, 70, 80]
-search_step_size = [0.001, 0.0025, 0.005, 0.0075]
+search_alpha = [0.4, 0.5, 0.55, 0.6, 0.7, 0.8]
+search_x_max = [20, 50, 70, 80, 90]
+search_step_size = [0.001, 0.0075, 0.02, 0.05, 0.1, 0.5]
 search_n_epochs = [75]
 search_weighting = [False]
 search_grid = [[alpha, x_max, step_size, n_epochs, weighting] for alpha in search_alpha for x_max in search_x_max
@@ -925,6 +932,7 @@ for alpha, x_max, step_size, n_epochs, weighting in search_grid:
                                                                     step_size=step_size, n_epochs=n_epochs,
                                                                     batch_size=64,
                                                                     workers=2, verbose=verbose)  # Train vectors.
+        # Check for nan results. If present, go to next configuration.
         if np.sum(np.isnan(loss_glove_items)) > 0:
             print("Encountered nan loss with following parameters:")
             print("alpha =", alpha, "x_max =", x_max, "step_size =", step_size,
@@ -1026,12 +1034,6 @@ glove_aggregation = True
 vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=0.55, x_max=80.0,
                                                             step_size=0.0075, n_epochs=75, batch_size=64, workers=2,
                                                             verbose=verbose)  # Train vectors.
-if verbose:
-    pass
-    # plt.figure()
-    # plt.plot(range(len(loss_glove_items)), loss_glove_items)
-    # plt.legend(["GloVe training loss"])
-    # plt.show()
 vector_dict_trglove = {dict_ix_term_items[key]: value for key, value in
                        vector_dict_trglove.items()}  # Translate indices.
 term_vectors_trglove = term_vectors_from_dict(vector_dict_trglove, terms_items, normalize=True, verbose=verbose)
@@ -1043,68 +1045,276 @@ else:
     # Compute item similarity and set negative values to 0.
     item_similarity_trglove = pd.DataFrame(np.asarray(
         np.asmatrix(item_vectors_trglove) * np.asmatrix(item_vectors_trglove).T).clip(min=0),
-        index=item_vectors_trglove.index.values, columns=item_vectors_trglove.index.values)
+                                           index=item_vectors_trglove.index.values,
+                                           columns=item_vectors_trglove.index.values)
 construct_similarity_trglove = aggregate_construct_similarity(item_similarity_trglove, gold_items, variable_ids,
                                                               n_similarities=2, verbose=verbose)
 fpr_trglove, tpr_trglove, roc_auc_trglove = evaluate(construct_similarity_trglove, construct_identity_gold)
 print("ROC AUC self-trained GloVe =", roc_auc_trglove, "\n")
 
 # Compute construct similarity based on normalized author co-occurrence matrix without creating a semantic space.
-author_similarity = np.asarray(dtm_authors).dot(np.asarray(dtm_authors).T)
-author_similarity = pd.DataFrame(author_similarity, index=corpus_authors, columns=corpus_authors)
-construct_similarity_authors = aggregate_construct_similarity(author_similarity, gold_items, var_ids_authors,
-                                                              construct_authors=construct_authors,
-                                                              n_similarities=2, verbose=verbose)
+coauthor_similarity = np.asarray(dtm_authors).dot(np.asarray(dtm_authors).T)
+coauthor_similarity = pd.DataFrame(coauthor_similarity, index=corpus_authors, columns=corpus_authors)
+construct_similarity_authors = pd.DataFrame(np.zeros([len(var_ids_authors), len(var_ids_authors)]),
+                                            index=var_ids_authors, columns=var_ids_authors)
+for i in var_ids_authors:  # Fill construct similarity matrix with coauthor group similarities.
+    for k in var_ids_authors:
+        construct_similarity_authors[k][i] = \
+            coauthor_similarity[construct_authors[gold2funk[k]]][construct_authors[gold2funk[i]]]
 fpr_auth, tpr_auth, roc_auc_auth = evaluate(construct_similarity_authors,
                                             construct_identity_gold_authors)
 print("ROC AUC authors =", roc_auc_auth, "\n")
+
 # Pearson correlation coefficient between construct similarity computed with reduced LSA items and with authors.
 print("Pearson correlation and significance between LSA on items and co-occurr authors:\n",
       pearsonr(np.asarray(construct_similarity_lsa.loc[var_ids_authors, var_ids_authors])[triu_indices],
                np.asarray(construct_similarity_authors)[triu_indices]), "\n")
 
-# TODO: below 0.5 performance might be due to possibly unsorted indices in various places. using doc-vectors
-# TODO (cntd.): gives above 0.5 performance. Using unique authors as corpus increases correlation but
-# TODO (cntd.): degrades performance.
 # Compute construct similarity matrix with LSA on author corpus.
-vector_dict_lsa_authors, coauthors_vectors_lsa = train_vectors_lsa(dtm_authors, n_components=100,
-                                                                   return_doc_vectors=True)
-coauthor_similarity_lsa = pd.DataFrame(np.asarray(coauthors_vectors_lsa).dot(coauthors_vectors_lsa.T),
-                                       index=coauthors_vectors_lsa.index.values,
-                                       columns=coauthors_vectors_lsa.index.values)
-# author_vectors_lsa = term_vectors_from_dict(vector_dict_lsa_authors, terms_authors, normalize=True, verbose=verbose)
-# coauthor_similarity_lsa = pd.DataFrame(aggregate_item_similarity(dtm_authors, author_vectors_lsa,
-#                                                                n_similarities=2, verbose=verbose),
-#                                      index=dtm_authors.index.values, columns=dtm_authors.index.values)
-construct_similarity_lsa_authors = aggregate_construct_similarity(coauthor_similarity_lsa, gold_items, var_ids_authors,
-                                                                  construct_authors=construct_authors,
-                                                                  n_similarities=2, verbose=verbose)
+vector_dict_lsa_authors, coauthor_doc_vectors_lsa = train_vectors_lsa(dtm_authors, n_components=100,
+                                                                      return_doc_vectors=True)
+author_vectors_lsa = term_vectors_from_dict(vector_dict_lsa_authors, terms_authors, normalize=True, verbose=verbose)
+coauthor_vectors_lsa = vector_average(dtm_authors, author_vectors_lsa, weighting=False)
+coauthor_similarity_lsa = pd.DataFrame(np.asarray(coauthor_vectors_lsa).dot(coauthor_vectors_lsa.T),
+                                       index=coauthor_vectors_lsa.index.values,
+                                       columns=coauthor_vectors_lsa.index.values)
+construct_similarity_lsa_authors = pd.DataFrame(np.zeros([len(var_ids_authors), len(var_ids_authors)]),
+                                                index=var_ids_authors, columns=var_ids_authors)
+for i in var_ids_authors:  # Fill construct similarity matrix with coauthor group similarities.
+    for k in var_ids_authors:
+        construct_similarity_lsa_authors[k][i] = \
+            coauthor_similarity_lsa[construct_authors[gold2funk[k]]][construct_authors[gold2funk[i]]]
 fpr_lsa_auth, tpr_lsa_auth, roc_auc_lsa_auth = evaluate(construct_similarity_lsa_authors,
                                                         construct_identity_gold_authors)
 print("ROC AUC LSA authors =", roc_auc_lsa_auth, "\n")
-triu_indices = np.triu_indices(len(var_ids_authors), k=1)
+
 # Pearson correlation coefficient between construct similarity computed with reduced LSA items and with LSA authors.
 print("Pearson correlation and significance between LSA on items and LSA on authors:\n",
       pearsonr(np.asarray(construct_similarity_lsa.loc[var_ids_authors, var_ids_authors])[triu_indices],
                np.asarray(construct_similarity_lsa_authors)[triu_indices]), "\n")
 
-# Compute construct similarity matrix with GloVe on author corpus. Does item-aggregation work with authors?
+# Perform grid search on GloVe self-trained on author corpus with unweighted vector average for speed.
+# You can train GloVe with best parameters afterwards.
+try:
+    glove_results_auth = pd.read_csv('GloVe_search_results_auth.csv', index_col=0).values.tolist()
+except FileNotFoundError:
+    glove_results_auth = []
+search_n_components_auth = [50, 100, 150, 200]
+search_alpha_auth = [0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
+search_x_max_auth = [10, 25, 40, 55, 70, 85, 100]
+search_step_size_auth = [0.002, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1, 0.2]
+search_n_epochs_auth = [50]
+search_weighting_auth = [False]
+search_grid_auth = [[n_comp, alpha, x_max, step_size, n_epochs, weighting] for n_comp in search_n_components_auth
+                    for alpha in search_alpha_auth for x_max in search_x_max_auth
+                    for step_size in search_step_size_auth for n_epochs in search_n_epochs_auth
+                    for weighting in search_weighting_auth]
+search_early_stopping_auth = 0.99  # ROC AUC for early stopping of grid search.
+ctr_auth = 0
+print("Performing grid search on GloVe self-trained on author corpus...\n")
+for n_comp, alpha, x_max, step_size, n_epochs, weighting in search_grid_auth:
+    try:
+        print("n_comp=", n_comp, "alpha =", alpha, "x_max =", x_max, "step_size =", step_size,
+              "n_epochs =", n_epochs, "weighting =", weighting)
+        vector_dict_glove_authors, loss_glove_auth = train_vectors_glove(ttd_authors, n_components=n_comp, alpha=alpha,
+                                                                         x_max=x_max,
+                                                                         step_size=step_size, n_epochs=n_epochs,
+                                                                         batch_size=64,
+                                                                         workers=2, verbose=verbose)  # Train vectors.
+        # Check for nan results. If present, go to next configuration.
+        if np.sum(np.isnan(loss_glove_auth)) > 0:
+            print("Encountered nan loss with following parameters:")
+            print("n_comp=", n_comp, "alpha =", alpha, "x_max =", x_max, "step_size =", step_size,
+                  "n_epochs =", n_epochs, "weighting =", weighting, "\n")
+            continue
+        vector_dict_glove_authors = {dict_ix_term_authors[key]: value for key, value in
+                                     vector_dict_glove_authors.items()}  # Translate indices.
+        author_vectors_glove = term_vectors_from_dict(vector_dict_glove_authors, terms_authors, normalize=True,
+                                                      verbose=verbose)
+        coauthor_vectors_glove = vector_average(dtm_authors, author_vectors_glove, weighting=weighting)
+        coauthor_similarity_glove = pd.DataFrame(np.asarray(
+            np.asmatrix(coauthor_vectors_glove) * np.asmatrix(coauthor_vectors_glove).T),
+            index=coauthor_vectors_glove.index.values, columns=coauthor_vectors_glove.index.values)
+        construct_similarity_glove_authors = pd.DataFrame(np.zeros([len(var_ids_authors), len(var_ids_authors)]),
+                                                          index=var_ids_authors, columns=var_ids_authors)
+        for i in var_ids_authors:  # Fill construct similarity matrix with coauthor group similarities.
+            for k in var_ids_authors:
+                construct_similarity_glove_authors[k][i] = \
+                    coauthor_similarity_glove[construct_authors[gold2funk[k]]][construct_authors[gold2funk[i]]]
+        fpr_glove_auth, tpr_glove_auth, roc_auc_glove_auth = evaluate(construct_similarity_glove_authors,
+                                                                      construct_identity_gold)
+        ctr_auth += 1
+        print("Result for GloVe on authors with n_comp=", n_comp, "alpha =", alpha, "x_max =", x_max,
+              "step_size =", step_size, "n_epochs =", n_epochs, "weighting =", weighting)
+        print("ROC AUC =", roc_auc_glove_auth, "GloVe training loss =", loss_glove_auth[-1], "\n")
+        print("Grid search on GloVe.", ctr_auth / len(search_grid_auth) * 100, "%\n")
+        glove_results_auth.append(
+            [n_comp, alpha, x_max, step_size, n_epochs, weighting, roc_auc_glove_auth, loss_glove_auth[-1]])
+        if roc_auc_glove_auth >= search_early_stopping:
+            print("Early stopping: ROC AUC", roc_auc_glove_auth, ">=", search_early_stopping)
+            break
+    except:
+        print("Encountered some error. Continuing search with next parameter set...\n")
+        continue
+print("Grid search results:")
+glove_results_auth = pd.DataFrame(np.asarray(glove_results_auth), columns=['n_comp', 'alpha', 'x_max', 'step_size',
+                                                                           'n_epochs', 'weighting', 'roc_auc',
+                                                                           'training_loss'])
+print(glove_results_auth)
+# Print best GloVe configuration.
+glove_results_auth_best = pd.DataFrame(
+    np.asarray(glove_results_auth)[np.where(
+        np.asarray(glove_results_auth)[:, -2] == np.max(np.asarray(glove_results_auth)[:, -2]))],
+    columns=['n_comp', 'alpha', 'x_max', 'step_size', 'n_epochs', 'weighting', 'roc_auc', 'training_loss'])
+print("Best result:")
+print(glove_results_auth_best, "\n")
+# Save grid search results.
+glove_results_auth.to_csv('GloVe_search_results_auth.csv')
+
+# Plot GloVe grid search results.
+if verbose:
+    plt.figure(figsize=(10, 6))
+    # Training alpha.
+    x_plt = np.unique(glove_results_auth['alpha'])
+    y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['alpha'].isin([x]), 'roc_auc']) for x in x_plt]
+    e_plt = [np.std(glove_results_auth.loc[glove_results_auth['alpha'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
+    plt.subplot(2, 3, 1)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.xlabel('alpha')
+    plt.ylabel('mean roc_auc')
+    # Training x_max.
+    x_plt = np.unique(glove_results_auth['x_max'])
+    y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['x_max'].isin([x]), 'roc_auc']) for x in x_plt]
+    e_plt = [np.std(glove_results_auth.loc[glove_results_auth['x_max'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
+    plt.subplot(2, 3, 2)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.xlabel('x_max')
+    plt.ylabel('mean roc_auc')
+    plt.title('GloVe prototype hyperparameter search for authors')
+    # Training step size.
+    x_plt = np.unique(glove_results_auth['step_size'])
+    y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['step_size'].isin([x]), 'roc_auc']) for x in x_plt]
+    e_plt = [np.std(glove_results_auth.loc[glove_results_auth['step_size'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
+    plt.subplot(2, 3, 3)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.xlabel('step_size')
+    plt.ylabel('mean roc_auc')
+    # Number of training epochs.
+    x_plt = np.unique(glove_results_auth['n_epochs'])
+    y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['n_epochs'].isin([x]), 'roc_auc']) for x in x_plt]
+    e_plt = [np.std(glove_results_auth.loc[glove_results_auth['n_epochs'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
+    plt.subplot(2, 3, 4)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.xlabel('n_epochs')
+    plt.ylabel('mean roc_auc')
+    # Weighting in vector averaging.
+    x_plt = np.unique(glove_results_auth['weighting'])
+    y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['weighting'].isin([x]), 'roc_auc']) for x in x_plt]
+    e_plt = [np.std(glove_results_auth.loc[glove_results_auth['weighting'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
+    plt.subplot(2, 3, 5)
+    plt.bar(x_plt, y_plt, yerr=e_plt, capsize=4)
+    plt.xlim(-0.5, 1.5)
+    plt.xlabel('weighting')
+    plt.ylabel('mean roc_auc')
+    # Number of dimensions.
+    x_plt = np.unique(glove_results_auth['n_comp'])
+    y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['n_comp'].isin([x]), 'roc_auc']) for x in x_plt]
+    plt.subplot(2, 3, 6)
+    plt.scatter(x_plt, y_plt)
+    plt.xlabel('n_comp')
+    plt.ylabel('mean roc_auc')
+    plt.subplots_adjust(wspace=0.3, hspace=0.4)
+    plt.show(block=False)
+
+# Compute construct similarity matrix with GloVe on author corpus.
 vector_dict_glove_authors, loss_glove_authors = train_vectors_glove(ttd_authors, n_components=100, alpha=0.75,
                                                                     x_max=100.0, step_size=0.05, n_epochs=25,
                                                                     batch_size=64, workers=2, verbose=verbose)
 vector_dict_glove_authors = {dict_ix_term_authors[key]: value for key, value in
                              vector_dict_glove_authors.items()}  # Translate indices.
 author_vectors_glove = term_vectors_from_dict(vector_dict_glove_authors, terms_authors, normalize=True, verbose=verbose)
-coauthor_similarity_glove = pd.DataFrame(aggregate_item_similarity(dtm_authors, author_vectors_glove,
-                                                                   n_similarities=2, verbose=verbose),
-                                         index=dtm_authors.index.values, columns=dtm_authors.index.values)
-construct_similarity_glove_authors = aggregate_construct_similarity(coauthor_similarity_glove, gold_items,
-                                                                    var_ids_authors,
-                                                                    construct_authors=construct_authors,
-                                                                    n_similarities=2, verbose=verbose)
+coauthor_vectors_glove = vector_average(dtm_authors, author_vectors_glove, weighting=False)
+coauthor_similarity_glove = pd.DataFrame(np.asarray(coauthor_vectors_glove).dot(coauthor_vectors_glove.T),
+                                         index=coauthor_vectors_glove.index.values,
+                                         columns=coauthor_vectors_glove.index.values)
+construct_similarity_glove_authors = pd.DataFrame(np.zeros([len(var_ids_authors), len(var_ids_authors)]),
+                                                  index=var_ids_authors, columns=var_ids_authors)
+for i in var_ids_authors:  # Fill construct similarity matrix with coauthor group similarities.
+    for k in var_ids_authors:
+        construct_similarity_glove_authors[k][i] = \
+            coauthor_similarity_glove[construct_authors[gold2funk[k]]][construct_authors[gold2funk[i]]]
 fpr_glove_auth, tpr_glove_auth, roc_auc_glove_auth = evaluate(construct_similarity_glove_authors,
                                                               construct_identity_gold_authors)
 print("ROC AUC GloVe authors =", roc_auc_glove_auth, "\n")
+
+# Construct correlation matrix between all construct similarities and gold standard.
+all_similarities_gold = np.asarray(np.asmatrix([np.asarray(construct_similarity_lsa)[triu_indices],
+                                                np.asarray(construct_similarity_preglove)[triu_indices],
+                                                np.asarray(construct_similarity_trglove)[triu_indices],
+                                                np.asarray(construct_similarity_authors)[triu_indices],
+                                                np.asarray(construct_similarity_lsa_authors)[triu_indices],
+                                                np.asarray(construct_identity_gold_authors)[triu_indices]]).T)
+all_similarities_gold = pd.DataFrame(all_similarities_gold, columns=['LSA', 'preGloVe', 'trGloVe', 'Authors',
+                                                                     'LSA authors', 'gold'])
+all_similarity_correlations = all_similarities_gold.corr()
+print("Correlations between all construct similarity measures:")
+print(all_similarity_correlations, "\n")
+
+if verbose:
+    # Plot ROC curves.
+    plt.figure()
+    plt.grid(True)
+    plt.plot(fpr_lsa, tpr_lsa)
+    plt.plot(fpr_preglove, tpr_preglove)
+    plt.plot(fpr_trglove, tpr_trglove)
+    plt.plot(fpr_auth, tpr_auth)
+    plt.plot(fpr_lsa_auth, tpr_lsa_auth)
+    plt.plot(fpr_glove_auth, tpr_glove_auth)
+    plt.xlabel("False Positive Rate (FPR)")
+    plt.ylabel("True Positive Rate (TPR)")
+    plt.legend(["LSA", "preGloVe", "trGloVe", "authors", "LSA authors", "GloVe authors"])
+    plt.show()
+
+
+# TODO: -----------------------------------------
+# TODO: ---------------- ARCHIVE ----------------
+
+
+def term_term_cooccurrence_scratch(corpus):
+    """Creates sparse term-term cooccurrence dictionary from passed corpus. Compared to using the dot product
+    of the dt_matrix, this implementation has the disadvantage of being harder to normalize."""
+    # Implementation checked 30 June.
+    # Index terms in corpus, both as index -> term and as term -> index to translate in both directions.
+    s = ' '
+    terms = np.unique(s.join(corpus).split())
+    dict_ix_term = {i: terms[i] for i in range(len(terms))}
+    dict_term_ix = {v: k for k, v in dict_ix_term.items()}
+    # Translate corpus to indices.
+    corpus = np.asarray([[dict_term_ix[term] for term in corpus[i].split()] for i in range(len(corpus))])
+    # Build the sparse term co-occurrence dictionary.
+    tt_dict = {i: {} for i in range(len(terms))}
+    for paragraph in corpus:
+        for ix_center_term in range(len(paragraph)):
+            for window_term in paragraph[:ix_center_term] + paragraph[ix_center_term + 1:]:
+                try:
+                    tt_dict[paragraph[ix_center_term]][window_term] += 1
+                except KeyError:
+                    tt_dict[paragraph[ix_center_term]][window_term] = 1
+    return tt_dict, dict_term_ix, dict_ix_term
+
+
+def test_ttcs():
+    corpus = np.asarray(['it technolog advanc situat',
+                         "mari don't like situat",
+                         'technolog great',
+                         'yes sir sir that question'])
+    processing = 'count'
+    result_1, result_2, result_3 = term_term_cooccurrence_scratch(corpus)
+    print(result_1, "\n", result_2, "\n", result_3, "\n")
+    info(result_1)
+    info(result_2)
+    info(result_3)
+
 
 # Perform linear regression on self-trained GloVe.
 lin_reg_trglove_X = np.asarray(np.asarray(construct_similarity_trglove)[triu_indices]).reshape(-1, 1)
@@ -1169,72 +1379,3 @@ similarities_flat_lsa_glove = similarities_flat_all[:, 0:3]
 fpr_mean_lsa_glove, tpr_mean_lsa_glove, roc_auc_mean_lsa_glove = evaluate(
     np.mean(similarities_flat_lsa_glove, axis=1), np.asarray(construct_identity_gold_authors)[triu_indices])
 print("ROC AUC mean LSA GloVe =", roc_auc_mean_lsa_glove, "\n")
-
-# Construct correlation matrix between all construct similarities.
-all_similarities_gold = np.asarray(np.asmatrix([np.asarray(construct_similarity_lsa)[triu_indices],
-                                                np.asarray(construct_similarity_preglove)[triu_indices],
-                                                np.asarray(construct_similarity_trglove)[triu_indices],
-                                                np.asarray(construct_similarity_authors)[triu_indices],
-                                                np.asarray(construct_similarity_lsa_authors)[triu_indices],
-                                                np.asarray(construct_identity_gold_authors)[triu_indices]]).T)
-all_similarities_gold = pd.DataFrame(all_similarities_gold, columns=['LSA', 'preGloVe', 'trGloVe', 'Authors',
-                                                                     'LSA authors', 'gold'])
-all_similarity_correlations = all_similarities_gold.corr()
-print("Correlations between all construct similarity measures:")
-print(all_similarity_correlations, "\n")
-
-if verbose:
-    # Plot ROC curves.
-    plt.figure()
-plt.grid(True)
-plt.plot(fpr_lsa, tpr_lsa)
-plt.plot(fpr_preglove, tpr_preglove)
-plt.plot(fpr_trglove, tpr_trglove)
-plt.plot(fpr_auth, tpr_auth)
-plt.plot(fpr_lsa_auth, tpr_lsa_auth)
-plt.plot(fpr_mean_all, tpr_mean_all)
-plt.plot(fpr_log_all, tpr_log_all)
-plt.xlabel("False Positive Rate (FPR)")
-plt.ylabel("True Positive Rate (TPR)")
-plt.legend(["LSA", "preGloVe", "trGloVe", "authors", "LSA authors", "mean all", "log-reg all"])
-plt.show()
-
-
-# TODO: -----------------------------------------
-# TODO: ---------------- ARCHIVE ----------------
-
-
-def term_term_cooccurrence_scratch(corpus):
-    """Creates sparse term-term cooccurrence dictionary from passed corpus. Compared to using the dot product
-    of the dt_matrix, this implementation has the disadvantage of being harder to normalize."""
-    # Implementation checked 30 June.
-    # Index terms in corpus, both as index -> term and as term -> index to translate in both directions.
-    s = ' '
-    terms = np.unique(s.join(corpus).split())
-    dict_ix_term = {i: terms[i] for i in range(len(terms))}
-    dict_term_ix = {v: k for k, v in dict_ix_term.items()}
-    # Translate corpus to indices.
-    corpus = np.asarray([[dict_term_ix[term] for term in corpus[i].split()] for i in range(len(corpus))])
-    # Build the sparse term co-occurrence dictionary.
-    tt_dict = {i: {} for i in range(len(terms))}
-    for paragraph in corpus:
-        for ix_center_term in range(len(paragraph)):
-            for window_term in paragraph[:ix_center_term] + paragraph[ix_center_term + 1:]:
-                try:
-                    tt_dict[paragraph[ix_center_term]][window_term] += 1
-                except KeyError:
-                    tt_dict[paragraph[ix_center_term]][window_term] = 1
-    return tt_dict, dict_term_ix, dict_ix_term
-
-
-def test_ttcs():
-    corpus = np.asarray(['it technolog advanc situat',
-                         "mari don't like situat",
-                         'technolog great',
-                         'yes sir sir that question'])
-    processing = 'count'
-    result_1, result_2, result_3 = term_term_cooccurrence_scratch(corpus)
-    print(result_1, "\n", result_2, "\n", result_3, "\n")
-    info(result_1)
-    info(result_2)
-    info(result_3)
