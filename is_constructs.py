@@ -290,8 +290,7 @@ def document_term_cooccurrence(corpus, processing='tfidf_l2'):
         tfidf_vectorizer = TfidfVectorizer(stop_words=None, lowercase=False, norm='l2', use_idf=True, smooth_idf=True)
         dt_matrix_tfidf_l2 = tfidf_vectorizer.fit_transform(corpus)
         dt_matrix_tfidf_l2 = dt_matrix_tfidf_l2.toarray()
-        idf_weights = pd.DataFrame(tfidf_vectorizer.idf_, index=terms)
-        return pd.DataFrame(dt_matrix_tfidf_l2, index=corpus, columns=terms), terms, idf_weights
+        return pd.DataFrame(dt_matrix_tfidf_l2, index=corpus, columns=terms), terms
     # print(pd.DataFrame(dt_matrix, index=item_corpus, columns=count_vectorizer.get_feature_names()).head(5))
     if processing == 'log_l2':
         # TODO: Gives RuntimeWarning: divide by zero encountered in log
@@ -350,8 +349,6 @@ def term_term_cooccurrence(dt_matrix, verbose=False):
         ctr += 1
         if verbose and ctr % 300 == 0:
             print("Building term-term cooccurrence dictionary:", ctr / len(terms_ix) * 100, "%", flush=True)
-    # if verbose:
-    #     print("\n")
     return tt_dict, dict_term_ix, dict_ix_term
 
 
@@ -410,7 +407,7 @@ def test_tvfd():
 
 
 def train_vectors_lsa(dt_matrix, n_components=300, return_doc_vectors=False):
-    """Train term and item vectors with SVD a.k.a. LSA."""
+    """Train term and item vectors with SVD a.k.a. LSA. Both term and document vectors are naturally normalized."""
     # Implementation checked 28 June.
     assert len(dt_matrix) >= n_components, \
         "n docs must be >= n components. " + str(len(dt_matrix)) + " < " + str(n_components)
@@ -562,18 +559,22 @@ def test_tvg():
     info(result)
 
 
-def vector_average(dt_matrix, term_vectors, idf_weights=None):
+def vector_average(dt_matrix, term_vectors, weighting=False, normalize=True):
     """Compute vector average of term vectors to form item vectors. If idf-weights are passed,
     weighted vector centroid is computed."""
-    # Implementation unchecked.
+    # Implementation checked 13 July.
     doc_vectors = pd.DataFrame(np.zeros([len(dt_matrix), len(term_vectors.iloc[0])]), index=dt_matrix.index.values)
     for i in range(len(dt_matrix)):
         doc_term_vectors = term_vectors.loc[dt_matrix.columns.values[dt_matrix.iloc[i] > 0]]
-        if idf_weights is not None:
-            # Take idf-weighted centroid.
-            for term in doc_term_vectors.index.values:
-                doc_term_vectors.loc[term] = doc_term_vectors.loc[term] * float(idf_weights.loc[term])
+        if weighting:
+            # Take tf-idf-weighted centroid.
+            weights = dt_matrix.iloc[i][dt_matrix.iloc[i] > 0]
+            for w_ix in weights.index.values:
+                doc_term_vectors.loc[w_ix] = doc_term_vectors.loc[w_ix] * float(weights.loc[w_ix])
         doc_vectors.iloc[i] = np.mean(np.asarray(doc_term_vectors), axis=0)
+    if normalize:
+        doc_vectors = pd.DataFrame(Normalizer(norm='l2', copy=True).fit_transform(doc_vectors),
+                                   index=dt_matrix.index.values)
     return doc_vectors
 
 
@@ -588,9 +589,6 @@ def test_va():
                         'yes sir sir that question'])
     terms = np.asarray(['advanc', "don't", 'great', 'it', 'like', 'mari', 'question', 'sir', 'situat',
                         'technolog', 'that', 'yes'])
-    idf_weights = pd.DataFrame(np.asarray([1.91629073, 1.91629073, 1.91629073, 1.91629073, 1.91629073,
-                                           1.91629073, 1.91629073, 1.91629073, 1.51082562, 1.51082562,
-                                           1.91629073, 1.91629073]), index=terms)
     dt_matrix = pd.DataFrame(dt_matrix, index=items, columns=terms)
     vector_dict = {'advanc': [0.39588465221557745, -1.2575977953455109e-08, 1.249000902703301e-16, 0.48723035562135314],
                    "don't": [0.18859491626619804, 0.46382576479578286, -5.84601811404184e-16, -0.232110931026861],
@@ -608,9 +606,10 @@ def test_va():
                             -1.3183898417423734e-16],
                    'yes': [1.7607443281164592e-16, 1.3183898417423734e-16, 0.27683497845223565,
                            -1.3183898417423734e-16]}
-    term_vectors = term_vectors_from_dict(vector_dict, terms, normalize=False)
-    weighting = True
-    result = vector_average(dt_matrix, term_vectors, idf_weights=idf_weights, weighting=weighting)
+    weighting = False
+    normalize = True
+    term_vectors = term_vectors_from_dict(vector_dict, terms, normalize=True)
+    result = vector_average(dt_matrix, term_vectors, weighting=weighting, normalize=normalize)
     print(result, "\n")
     info(result)
 
@@ -814,7 +813,7 @@ def test_e():
 
 
 # Define central parameters.
-prototype = True  # TODO:
+prototype = False
 stemmer = 'porter2'
 ignore_chars = '''.,:;"'!?_-/()[]{}&%0123456789'''
 dtm_processing = 'tfidf_l2'  # 'count', 'l2', 'tfidf_l2', 'log_l2'
@@ -845,9 +844,9 @@ corpus_authors = np.unique(list(construct_authors.values()))
 
 # Create document-term matrices and term-term dictionary.
 print("Creating document-term matrices (docs x terms)...")
-dtm_items, terms_items, idf_weights_items = document_term_cooccurrence(corpus_items, processing=dtm_processing)
+dtm_items, terms_items = document_term_cooccurrence(corpus_items, processing=dtm_processing)
 # dtm_abstracts, terms_abstracts = document_term_cooccurrence(corpus_abstracts, processing=dtm_processing)
-dtm_authors, terms_authors, idf_weights_auth = document_term_cooccurrence(corpus_authors, processing=dtm_processing)
+dtm_authors, terms_authors = document_term_cooccurrence(corpus_authors, processing=dtm_processing)
 ttd_items, dict_term_ix_items, dict_ix_term_items = term_term_cooccurrence(dtm_items, verbose=verbose)
 ttd_authors, dict_term_ix_authors, dict_ix_term_authors = term_term_cooccurrence(dtm_authors, verbose=verbose)
 
@@ -866,9 +865,8 @@ else:
         # Term to item vector aggregation.
         item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2, verbose=verbose)
     else:
-        # Term vector averaging.
-        item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, idf_weights=idf_weights_items,
-                                              weighting=False)
+        # Term vector averaging. For weighted centroid: idf_weights=idf_weights_items
+        item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, weighting=False)
         item_similarity_lsa = pd.DataFrame(np.asarray(
             np.asmatrix(item_vectors_lsa_avg) * np.asmatrix(item_vectors_lsa_avg).T),
             index=item_vectors_lsa_avg.index.values, columns=item_vectors_lsa_avg.index.values)
@@ -878,10 +876,10 @@ fpr_lsa, tpr_lsa, roc_auc_lsa = evaluate(construct_similarity_lsa, construct_ide
 print("ROC AUC LSA =", roc_auc_lsa, "\n")
 
 # Compare item vector and item similarity aggregation methods.
-# TODO: include new result with weighted vector averaging
 term_vectors_lsa = term_vectors_from_dict(vector_dict_lsa, terms_items, normalize=True, verbose=verbose)
 item_vectors_lsa_dvec = item_vectors_lsa
 item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, weighting=False)
+item_vectors_lsa_avg_tfidf = vector_average(dtm_items, term_vectors_lsa, weighting=True)
 item_similarity_lsa_dvec = np.asarray(np.asmatrix(item_vectors_lsa_dvec) * np.asmatrix(item_vectors_lsa_dvec).T)
 item_similarity_lsa_avg = np.asarray(np.asmatrix(item_vectors_lsa_avg) * np.asmatrix(item_vectors_lsa_avg).T)
 item_similarity_lsa_agg = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2,
@@ -889,13 +887,11 @@ item_similarity_lsa_agg = aggregate_item_similarity(dtm_items, term_vectors_lsa,
 item_similarity_methods = pd.DataFrame(
     np.asarray(np.asmatrix([np.asarray(item_similarity_lsa_dvec)[np.triu_indices(len(item_similarity_lsa), k=1)],
                             np.asarray(item_similarity_lsa_avg)[np.triu_indices(len(item_similarity_lsa), k=1)],
+                            np.asarray(item_similarity_lsa_avg_tfidf)[np.triu_indices(len(item_similarity_lsa), k=1)],
                             np.asarray(item_similarity_lsa_agg)[np.triu_indices(len(item_similarity_lsa), k=1)]]).T),
-    columns=['LSA dvec', 'LSA avg', 'LSA agg'])
-print("Pearson correlation item-vectors LSA from document-vectors and from term-vector average.")
-print(pearsonr(np.asarray(item_vectors_lsa_dvec).flatten(), np.asarray(item_vectors_lsa_avg).flatten()))
+    columns=['LSA dvec', 'LSA avg', 'LSA avg tfidf', 'LSA agg'])
 print("Correlation table for item similarity methods.")
 print(item_similarity_methods.corr())
-plt.scatter(np.asarray(item_vectors_lsa_dvec).flatten(), np.asarray(item_vectors_lsa_avg).flatten())
 
 # Compute construct similarity matrix with pre-trained GloVe on item corpus.
 print("Computing construct similarity matrix with pre-trained GloVe...")
@@ -1258,9 +1254,10 @@ all_similarities_gold = np.asarray(np.asmatrix([np.asarray(construct_similarity_
                                                 np.asarray(construct_similarity_trglove)[triu_indices],
                                                 np.asarray(construct_similarity_authors)[triu_indices],
                                                 np.asarray(construct_similarity_lsa_authors)[triu_indices],
+                                                np.asarray(construct_similarity_glove_authors)[triu_indices],
                                                 np.asarray(construct_identity_gold_authors)[triu_indices]]).T)
-all_similarities_gold = pd.DataFrame(all_similarities_gold, columns=['LSA', 'preGloVe', 'trGloVe', 'Authors',
-                                                                     'LSA authors', 'gold'])
+all_similarities_gold = pd.DataFrame(all_similarities_gold, columns=['LSA', 'preGloVe', 'trGloVe', 'BOW authors',
+                                                                     'LSA authors', 'GloVe authors', 'gold'])
 all_similarity_correlations = all_similarities_gold.corr()
 print("Correlations between all construct similarity measures:")
 print(all_similarity_correlations, "\n")
