@@ -273,7 +273,7 @@ def test_pt():
     info(result_2)
 
 
-def document_term_cooccurrence(corpus, processing='l2'):
+def document_term_cooccurrence(corpus, processing='tfidf_l2'):
     """Creates and returns document-term matrix DataFrame with the specified processing method.
     Also returns the feature names (terms) extracted by the vectorizer. Available processing methods are
     'count', 'l2', 'tfidf_l2' and 'log_l2'."""
@@ -290,7 +290,8 @@ def document_term_cooccurrence(corpus, processing='l2'):
         tfidf_vectorizer = TfidfVectorizer(stop_words=None, lowercase=False, norm='l2', use_idf=True, smooth_idf=True)
         dt_matrix_tfidf_l2 = tfidf_vectorizer.fit_transform(corpus)
         dt_matrix_tfidf_l2 = dt_matrix_tfidf_l2.toarray()
-        return pd.DataFrame(dt_matrix_tfidf_l2, index=corpus, columns=terms), terms
+        idf_weights = pd.DataFrame(tfidf_vectorizer.idf_, index=terms)
+        return pd.DataFrame(dt_matrix_tfidf_l2, index=corpus, columns=terms), terms, idf_weights
     # print(pd.DataFrame(dt_matrix, index=item_corpus, columns=count_vectorizer.get_feature_names()).head(5))
     if processing == 'log_l2':
         # TODO: Gives RuntimeWarning: divide by zero encountered in log
@@ -317,11 +318,12 @@ def test_dtc():
                          'technolog great',
                          'yes sir sir that question'])
     processing = 'tfidf_l2'
-    result_1, result_2 = document_term_cooccurrence(corpus, processing=processing)
-    print(result_1, "\n", np.asarray(result_1), "\n", result_2, "\n")
+    result_1, result_2, result_3 = document_term_cooccurrence(corpus, processing=processing)
+    print(result_1, "\n", np.asarray(result_1), "\n", result_2, "\n", result_3, "\n")
     print(np.linalg.norm(np.asarray(result_1), axis=1))
     info(result_1)
     info(result_2)
+    info(result_3)
 
 
 def term_term_cooccurrence(dt_matrix, verbose=False):
@@ -560,21 +562,18 @@ def test_tvg():
     info(result)
 
 
-def vector_average(dt_matrix, term_vectors, weighting=False):
-    """Compute vector average of term vectors to form item vectors. If weighting=True, weights are values in the
-    dt_matrix, mean is computed by dividing weighted sum of the vectors by sum of the weights."""
-    # Implementation checked 6 July.
+def vector_average(dt_matrix, term_vectors, idf_weights=None):
+    """Compute vector average of term vectors to form item vectors. If idf-weights are passed,
+    weighted vector centroid is computed."""
+    # Implementation unchecked.
     doc_vectors = pd.DataFrame(np.zeros([len(dt_matrix), len(term_vectors.iloc[0])]), index=dt_matrix.index.values)
     for i in range(len(dt_matrix)):
         doc_term_vectors = term_vectors.loc[dt_matrix.columns.values[dt_matrix.iloc[i] > 0]]
-        if weighting:
-            # Take weighted mean, dividing by sum of weights.
-            weights = dt_matrix.iloc[i][dt_matrix.iloc[i] > 0]
-            for w_ix in weights.index.values:
-                doc_term_vectors.loc[w_ix] = doc_term_vectors.loc[w_ix] * weights.loc[w_ix]
-            doc_vectors.iloc[i] = np.sum(np.asarray(doc_term_vectors), axis=0) / np.sum(weights)
-        else:
-            doc_vectors.iloc[i] = np.mean(np.asarray(doc_term_vectors), axis=0)
+        if idf_weights is not None:
+            # Take idf-weighted centroid.
+            for term in doc_term_vectors.index.values:
+                doc_term_vectors.loc[term] = doc_term_vectors.loc[term] * float(idf_weights.loc[term])
+        doc_vectors.iloc[i] = np.mean(np.asarray(doc_term_vectors), axis=0)
     return doc_vectors
 
 
@@ -589,6 +588,9 @@ def test_va():
                         'yes sir sir that question'])
     terms = np.asarray(['advanc', "don't", 'great', 'it', 'like', 'mari', 'question', 'sir', 'situat',
                         'technolog', 'that', 'yes'])
+    idf_weights = pd.DataFrame(np.asarray([1.91629073, 1.91629073, 1.91629073, 1.91629073, 1.91629073,
+                                           1.91629073, 1.91629073, 1.91629073, 1.51082562, 1.51082562,
+                                           1.91629073, 1.91629073]), index=terms)
     dt_matrix = pd.DataFrame(dt_matrix, index=items, columns=terms)
     vector_dict = {'advanc': [0.39588465221557745, -1.2575977953455109e-08, 1.249000902703301e-16, 0.48723035562135314],
                    "don't": [0.18859491626619804, 0.46382576479578286, -5.84601811404184e-16, -0.232110931026861],
@@ -607,8 +609,8 @@ def test_va():
                    'yes': [1.7607443281164592e-16, 1.3183898417423734e-16, 0.27683497845223565,
                            -1.3183898417423734e-16]}
     term_vectors = term_vectors_from_dict(vector_dict, terms, normalize=False)
-    weighting = False
-    result = vector_average(dt_matrix, term_vectors, weighting=weighting)
+    weighting = True
+    result = vector_average(dt_matrix, term_vectors, idf_weights=idf_weights, weighting=weighting)
     print(result, "\n")
     info(result)
 
@@ -812,7 +814,7 @@ def test_e():
 
 
 # Define central parameters.
-prototype = False
+prototype = True  # TODO:
 stemmer = 'porter2'
 ignore_chars = '''.,:;"'!?_-/()[]{}&%0123456789'''
 dtm_processing = 'tfidf_l2'  # 'count', 'l2', 'tfidf_l2', 'log_l2'
@@ -843,9 +845,9 @@ corpus_authors = np.unique(list(construct_authors.values()))
 
 # Create document-term matrices and term-term dictionary.
 print("Creating document-term matrices (docs x terms)...")
-dtm_items, terms_items = document_term_cooccurrence(corpus_items, processing=dtm_processing)
+dtm_items, terms_items, idf_weights_items = document_term_cooccurrence(corpus_items, processing=dtm_processing)
 # dtm_abstracts, terms_abstracts = document_term_cooccurrence(corpus_abstracts, processing=dtm_processing)
-dtm_authors, terms_authors = document_term_cooccurrence(corpus_authors, processing=dtm_processing)
+dtm_authors, terms_authors, idf_weights_auth = document_term_cooccurrence(corpus_authors, processing=dtm_processing)
 ttd_items, dict_term_ix_items, dict_ix_term_items = term_term_cooccurrence(dtm_items, verbose=verbose)
 ttd_authors, dict_term_ix_authors, dict_ix_term_authors = term_term_cooccurrence(dtm_authors, verbose=verbose)
 
@@ -865,7 +867,8 @@ else:
         item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2, verbose=verbose)
     else:
         # Term vector averaging.
-        item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, weighting=False)
+        item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, idf_weights=idf_weights_items,
+                                              weighting=False)
         item_similarity_lsa = pd.DataFrame(np.asarray(
             np.asmatrix(item_vectors_lsa_avg) * np.asmatrix(item_vectors_lsa_avg).T),
             index=item_vectors_lsa_avg.index.values, columns=item_vectors_lsa_avg.index.values)
@@ -1194,7 +1197,8 @@ if verbose:
     # Training step size.
     x_plt = np.unique(glove_results_auth['step_size'])
     y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['step_size'].isin([x]), 'roc_auc']) for x in x_plt]
-    e_plt = [np.std(glove_results_auth.loc[glove_results_auth['step_size'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
+    e_plt = [np.std(glove_results_auth.loc[glove_results_auth['step_size'].isin([x]), 'roc_auc'], axis=0) for x in
+             x_plt]
     plt.subplot(2, 3, 3)
     plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
     plt.xlabel('step_size')
@@ -1210,7 +1214,8 @@ if verbose:
     # Weighting in vector averaging.
     x_plt = np.unique(glove_results_auth['weighting'])
     y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['weighting'].isin([x]), 'roc_auc']) for x in x_plt]
-    e_plt = [np.std(glove_results_auth.loc[glove_results_auth['weighting'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
+    e_plt = [np.std(glove_results_auth.loc[glove_results_auth['weighting'].isin([x]), 'roc_auc'], axis=0) for x in
+             x_plt]
     plt.subplot(2, 3, 5)
     plt.bar(x_plt, y_plt, yerr=e_plt, capsize=4)
     plt.xlim(-0.5, 1.5)
