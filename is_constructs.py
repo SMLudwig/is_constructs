@@ -19,6 +19,7 @@ import editdistance
 import glove
 import csv
 import os.path
+import gc  # Garbage collector.
 import warnings
 import matplotlib.pyplot as plt
 
@@ -446,57 +447,70 @@ def test_ttvlsa():
     info(result_2)
 
 
-def load_term_vectors_glove(file_name, target_terms, new_reduce_dict=False,
-                            ignore_chars='''.,:;"'!?_-/()[]{}&%0123456789''', verbose=False):
+def load_term_vectors_glove(file_name, target_terms, new_reduce_dict=False, verbose=False):
     """Loads pre-trained GloVe term vectors from file. If option new_reduce_dict=True, load full dictionary and
     reduce it to the passed target_terms, save reduced dict to .npy file."""
     # Implementation unchecked.
+    file_name_hdf = file_name[:-4] + '.h5'
     if not new_reduce_dict:
         vector_dict = np.load(file_name).item()
     else:
-        print("Creating GloVe vector-dictionary of relevant terms from full vector file...")
-        if not os.path.isfile(file_name[:-4] + '.h5'):
-            # TODO: remove this try, just for debugging.
-            try:
-                print("No HDF5 file found. Creating new file...")
-                # Convert full vector file to pandas hdf5 file.
-                hdf = pd.HDFStore(file_name[:-4] + '.h5')
-                for chunk in pd.read_table(file_name, chunksize=100000, sep=' ', index_col=0,
-                                           quoting=csv.QUOTE_NONE):
-                    for i in chunk.index.values:
-                        if i in ignore_chars:  # Skip ignore characters like '/', '.', ...
-                            continue
-                        with warnings.catch_warnings():
-                            warnings.simplefilter('ignore')  # Some NaturalNameWarnings for names like 'and', 'in', ...
-                            try:
-                                hdf.put(i, chunk.loc[i])
-                            except ValueError:
-                                if verbose:
-                                    print("ValueError encountered for", i)
-                                continue
-            except TypeError:
-                print("chunk tail", chunk.tail(5))
-                print("i", i)
-                raise
-
+        if verbose:
+            print("Creating GloVe vector-dictionary of relevant terms from full vector file...")
+        if not os.path.isfile(file_name_hdf):  # Create new .h5 file if it does not exist.
+            if verbose:
+                print("No HDF5 file found. Creating new file, this will take some time...")
+            # Convert full vector file to pandas hdf5 file. This allows to create different vector dictionaries.
+            hdf = pd.HDFStore(file_name_hdf)
+            chunk_size = 64 * 1024
+            for c in 'abcdefghijklmnopqrstuvwxyz':
+                ctr = 0
+                df_temp = pd.DataFrame()
+                for chunk in pd.read_table(file_name, chunksize=chunk_size, sep=' ', index_col=0,
+                                           quoting=csv.QUOTE_NONE):  # Read word vector file in chunks to fit in RAM.
+                    # Reduce chunk to the vectors starting with the current letter.
+                    chunk = chunk.iloc[np.asarray([c == str(key)[0] for key in chunk.index.values])]
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')  # Some NaturalNameWarnings for names like 'and', 'in', ...
+                        # Add word vectors starting with current letter to the DataFrame.
+                        df_temp = pd.concat([df_temp, chunk], copy=False)
+                    ctr += 1
+                    if verbose:
+                        print("Processed chunk", ctr, "with size", chunk_size, "for letter", c)
+                hdf.put(c, df_temp)  # Append DataFrame of word vectors starting with the current letter to .h5 file.
+                # https://stackoverflow.com/questions/18201042/pandas-hdfstore-unload-dataframe-from-memory
+                hdf.flush()  # Clear internal buffer, goes to operating system buffer.
+                if verbose:
+                    print("Writing DataFrame for letter", c, "from operating system buffer to .h5 on disk...")
+                os.fsync(hdf._handle.fileno())  # Write from operating system buffer to disk to free up memory.
+                if verbose:
+                    print("Writing DataFrame to disk successful.")
+            hdf.close()
+            del hdf
+            gc.collect()  # Collect closed hdf (and other objects) from garbage to free up RAM.
             if verbose:
                 print("Full GloVe vector file converted to pandas HDF5 file.")
 
-        # TODO: load HDF5 or read properly from existing.
-
+        # Create vector dictionary of relevant terms from .h5 file.
         vector_dict = {}
         ctr = 0
-        for term in target_terms:
-            try:
-                vector_dict[term] = pd.read_hdf(file_name[:-4] + '.h5', key=term)
-            except KeyError:
-                continue  # deal with out of vocabulary words in term_vectors_from_dict(...)
-            ctr += 1
-            if verbose and ctr % 200 == 0:
-                print("Creating GloVe vector dictionary of relevant terms...", ctr / len(target_terms) * 100, "%",
-                      end="\r")
+
+        target_terms = ['technology', 'situation', 'use']
+
+        with pd.HDFStore(file_name_hdf) as hdf:
+            for term in target_terms:
+                try:
+                    vector_dict[term] = np.asarray(hdf.get(term[0]).loc[term])
+                except KeyError:
+                    pass  # deal with out of vocabulary words in term_vectors_from_dict(...)
+                ctr += 1
+                if verbose and ctr % 200 == 0:
+                    print("Creating GloVe vector dictionary of relevant terms...", ctr / len(target_terms) * 100, "%",
+                          end="\r")
+            hdf.close()
+        del hdf
+        gc.collect()
         np.save(file_name[:-4] + '_reduced.npy', vector_dict)
-        hdf.close()
     return vector_dict
 
 
@@ -509,6 +523,36 @@ def test_ltvg():
     result = load_term_vectors_glove(file_name, target_terms, new_reduce_dict=new_reduce_dict, verbose=verbose)
     print(result, "\n")
     info(result)
+
+    # HDFStore implementation testing.
+    # Define data.
+    hdf_test = pd.HDFStore('test.h5')
+    data = pd.DataFrame(np.asarray([[0, 2, 3], [1, 0, 4], [0, 2, 1],
+                                    [0, 2, 3], [1, 0, 4], [0, 2, 1],
+                                    [0, 2, 3], [1, 0, 4], [0, 2, 1]]), index=['hey', 'you', 'hurt',
+                                                                              'man', 'type', 'cat',
+                                                                              'bee', 'honey', 'bear'])
+    # Go through alphabet, create one DataFrame each for words starting with the same letter. Append the DataFrame
+    # to the HDFStore. -> 26 DataFrames in the store (in the test only 5).
+    for c in 'bchmty':
+        df_temp = pd.DataFrame()
+        for chunk in [data.iloc[0:3], data.iloc[3:6], data.iloc[6:9]]:
+            chunk = chunk.iloc[np.asarray([c == str(key)[0] for key in chunk.index.values])]
+            df_temp = df_temp.append(chunk)
+        hdf_test.put(c, df_temp)
+        hdf_test.flush()
+        os.fsync(hdf_test._handle.fileno())
+    hdf_test.close()
+    del hdf_test
+    gc.collect()
+
+    # Read from the HDFStore.
+    with pd.HDFStore('test.h5') as hdf_test:
+        print(hdf_test.info())
+        print(np.asarray(hdf_test.get('b').loc['bear']))
+        hdf_test.close()
+    del hdf_test
+    gc.collect()
 
 
 def train_vectors_glove(tt_dict, n_components=300, alpha=0.75, x_max=100.0, step_size=0.05, n_epochs=25,
@@ -570,10 +614,11 @@ def vector_average(dt_matrix, term_vectors, weighting=False, normalize=True):
             # Take tf-idf-weighted centroid.
             weights = dt_matrix.iloc[i][dt_matrix.iloc[i] > 0]
             for w_ix in weights.index.values:
-                doc_term_vectors.loc[w_ix] = doc_term_vectors.loc[w_ix] * float(weights.loc[w_ix])
+                doc_term_vectors.loc[w_ix] = np.asarray(doc_term_vectors.loc[w_ix]) * float(weights.loc[w_ix])
         doc_vectors.iloc[i] = np.mean(np.asarray(doc_term_vectors), axis=0)
     if normalize:
-        doc_vectors = pd.DataFrame(Normalizer(norm='l2', copy=True).fit_transform(doc_vectors),
+        # TODO: some nan values in the doc-vectors.
+        doc_vectors = pd.DataFrame(Normalizer(norm='l2', copy=True).fit_transform(np.nan_to_num(doc_vectors)),
                                    index=dt_matrix.index.values)
     return doc_vectors
 
@@ -814,11 +859,11 @@ def test_e():
 
 # Define central parameters.
 prototype = False
-stemmer = 'porter2'
+stemmer = None
 ignore_chars = '''.,:;"'!?_-/()[]{}&%0123456789'''
 dtm_processing = 'tfidf_l2'  # 'count', 'l2', 'tfidf_l2', 'log_l2'
-glove_pretrained_filename = 'glove-pre-trained/glove.6B.300d.txt'
-glove_new_reduce_dict = False
+glove_pretrained_filename = 'glove-pre-trained/glove.840B.300d.txt'
+glove_new_reduce_dict = True
 verbose = True
 
 # Load data.
@@ -852,7 +897,7 @@ ttd_authors, dict_term_ix_authors, dict_ix_term_authors = term_term_cooccurrence
 
 # Compute construct similarity matrix with LSA on item corpus.
 print("Computing construct similarity matrix with LSA...")
-use_doc_vectors_lsa = False
+use_doc_vectors_lsa = True
 lsa_aggregation = False
 vector_dict_lsa, item_vectors_lsa = train_vectors_lsa(dtm_items, n_components=300, return_doc_vectors=True)
 if use_doc_vectors_lsa:
@@ -865,7 +910,7 @@ else:
         # Term to item vector aggregation.
         item_similarity_lsa = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2, verbose=verbose)
     else:
-        # Term vector averaging. For weighted centroid: idf_weights=idf_weights_items
+        # Term vector averaging.
         item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, weighting=False)
         item_similarity_lsa = pd.DataFrame(np.asarray(
             np.asmatrix(item_vectors_lsa_avg) * np.asmatrix(item_vectors_lsa_avg).T),
@@ -882,6 +927,8 @@ item_vectors_lsa_avg = vector_average(dtm_items, term_vectors_lsa, weighting=Fal
 item_vectors_lsa_avg_tfidf = vector_average(dtm_items, term_vectors_lsa, weighting=True)
 item_similarity_lsa_dvec = np.asarray(np.asmatrix(item_vectors_lsa_dvec) * np.asmatrix(item_vectors_lsa_dvec).T)
 item_similarity_lsa_avg = np.asarray(np.asmatrix(item_vectors_lsa_avg) * np.asmatrix(item_vectors_lsa_avg).T)
+item_similarity_lsa_avg_tfidf = np.asarray(np.asmatrix(item_vectors_lsa_avg_tfidf) *
+                                           np.asmatrix(item_vectors_lsa_avg_tfidf).T)
 item_similarity_lsa_agg = aggregate_item_similarity(dtm_items, term_vectors_lsa, n_similarities=2,
                                                     verbose=verbose)
 item_similarity_methods = pd.DataFrame(
@@ -899,8 +946,14 @@ vector_dict_preglove = load_term_vectors_glove(file_name=glove_pretrained_filena
                                                target_terms=terms_items,
                                                new_reduce_dict=glove_new_reduce_dict, verbose=verbose)
 term_vectors_preglove = term_vectors_from_dict(vector_dict_preglove, terms_items, normalize=True, verbose=verbose)
-item_similarity_preglove = aggregate_item_similarity(dtm_items, term_vectors_preglove, n_similarities=2,
-                                                     verbose=verbose)
+item_vectors_preglove = vector_average(dtm_items, term_vectors_preglove, weighting=False)
+# Compute item similarity. Set negative values to 0, unknown source.
+item_similarity_preglove = pd.DataFrame(np.asarray(
+    np.asmatrix(item_vectors_preglove) * np.asmatrix(item_vectors_preglove).T).clip(min=0),
+                                       index=item_vectors_preglove.index.values,
+                                       columns=item_vectors_preglove.index.values)
+# item_similarity_preglove = aggregate_item_similarity(dtm_items, term_vectors_preglove, n_similarities=2,
+#                                                      verbose=verbose)
 construct_similarity_preglove = aggregate_construct_similarity(item_similarity_preglove, gold_items, variable_ids,
                                                                n_similarities=2, verbose=verbose)
 fpr_preglove, tpr_preglove, roc_auc_preglove = evaluate(construct_similarity_preglove, construct_identity_gold)
@@ -913,10 +966,10 @@ try:
 except FileNotFoundError:
     glove_results = []
 search_alpha = [0.4, 0.5, 0.55, 0.6, 0.7, 0.8]
-search_x_max = [20, 50, 70, 80, 90]
-search_step_size = [0.001, 0.0075, 0.02, 0.05, 0.1, 0.5]
-search_n_epochs = [75]
-search_weighting = [False]
+search_x_max = [10, 40, 60, 80, 100]
+search_step_size = [0.001, 0.0075, 0.02, 0.075, 0.2]
+search_n_epochs = [50]
+search_weighting = [False, True]
 search_grid = [[alpha, x_max, step_size, n_epochs, weighting] for alpha in search_alpha for x_max in search_x_max
                for step_size in search_step_size for n_epochs in search_n_epochs for weighting in search_weighting]
 search_early_stopping = 0.99  # ROC AUC for early stopping of grid search.
@@ -980,7 +1033,7 @@ if verbose:
     y_plt = [np.mean(glove_results.loc[glove_results['alpha'].isin([x]), 'roc_auc']) for x in x_plt]
     e_plt = [np.std(glove_results.loc[glove_results['alpha'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 1)
-    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='ko', capsize=4)
     plt.xlabel('alpha')
     plt.ylabel('mean roc_auc')
     # Training x_max.
@@ -988,16 +1041,16 @@ if verbose:
     y_plt = [np.mean(glove_results.loc[glove_results['x_max'].isin([x]), 'roc_auc']) for x in x_plt]
     e_plt = [np.std(glove_results.loc[glove_results['x_max'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 2)
-    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='ko', capsize=4)
     plt.xlabel('x_max')
     plt.ylabel('mean roc_auc')
-    plt.title('GloVe prototype hyperparameter search')
+    plt.title('GloVe on items hyperparameter search\n')
     # Training step size.
     x_plt = np.unique(glove_results['step_size'])
     y_plt = [np.mean(glove_results.loc[glove_results['step_size'].isin([x]), 'roc_auc']) for x in x_plt]
     e_plt = [np.std(glove_results.loc[glove_results['step_size'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 3)
-    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='ko', capsize=4)
     plt.xlabel('step_size')
     plt.ylabel('mean roc_auc')
     # Number of training epochs.
@@ -1005,7 +1058,7 @@ if verbose:
     y_plt = [np.mean(glove_results.loc[glove_results['n_epochs'].isin([x]), 'roc_auc']) for x in x_plt]
     e_plt = [np.std(glove_results.loc[glove_results['n_epochs'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 4)
-    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='ko', capsize=4)
     plt.xlabel('n_epochs')
     plt.ylabel('mean roc_auc')
     # Weighting in vector averaging.
@@ -1013,7 +1066,7 @@ if verbose:
     y_plt = [np.mean(glove_results.loc[glove_results['weighting'].isin([x]), 'roc_auc']) for x in x_plt]
     e_plt = [np.std(glove_results.loc[glove_results['weighting'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 5)
-    plt.bar(x_plt, y_plt, yerr=e_plt, capsize=4)
+    plt.bar(x_plt, y_plt, yerr=e_plt, capsize=4, color='w', edgecolor='k')
     plt.xlim(-0.5, 1.5)
     plt.xlabel('weighting')
     plt.ylabel('mean roc_auc')
@@ -1021,17 +1074,18 @@ if verbose:
     x_plt = np.unique(glove_results['training_loss'])
     y_plt = [np.mean(glove_results.loc[glove_results['training_loss'].isin([x]), 'roc_auc']) for x in x_plt]
     plt.subplot(2, 3, 6)
-    plt.scatter(x_plt, y_plt)
+    plt.scatter(x_plt, y_plt, c='k', marker='.')
     plt.xlabel('training_loss')
     plt.ylabel('mean roc_auc')
-    plt.subplots_adjust(wspace=0.3, hspace=0.4)
+    plt.subplots_adjust(wspace=0.45, hspace=0.3)
+    plt.savefig('GloVe_search_results.png')
     plt.show(block=False)
 
 # Compute construct similarity matrix with self-trained GloVe on item corpus.
 print("Computing construct similarity matrix with self-trained GloVe...")
-glove_aggregation = True
-vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=0.55, x_max=80.0,
-                                                            step_size=0.0075, n_epochs=75, batch_size=64, workers=2,
+glove_aggregation = False
+vector_dict_trglove, loss_glove_items = train_vectors_glove(ttd_items, n_components=300, alpha=0.4, x_max=10.0,
+                                                            step_size=0.2, n_epochs=50, batch_size=64, workers=2,
                                                             verbose=verbose)  # Train vectors.
 vector_dict_trglove = {dict_ix_term_items[key]: value for key, value in
                        vector_dict_trglove.items()}  # Translate indices.
@@ -1041,7 +1095,7 @@ if glove_aggregation:
                                                         verbose=verbose)
 else:
     item_vectors_trglove = vector_average(dtm_items, term_vectors_trglove, weighting=False)
-    # Compute item similarity and set negative values to 0.
+    # Compute item similarity. Set negative values to 0, unknown source.
     item_similarity_trglove = pd.DataFrame(np.asarray(
         np.asmatrix(item_vectors_trglove) * np.asmatrix(item_vectors_trglove).T).clip(min=0),
                                            index=item_vectors_trglove.index.values,
@@ -1073,10 +1127,13 @@ print("Pearson correlation and significance between LSA on items and co-occurr a
 vector_dict_lsa_authors, coauthor_doc_vectors_lsa = train_vectors_lsa(dtm_authors, n_components=100,
                                                                       return_doc_vectors=True)
 author_vectors_lsa = term_vectors_from_dict(vector_dict_lsa_authors, terms_authors, normalize=True, verbose=verbose)
-coauthor_vectors_lsa = vector_average(dtm_authors, author_vectors_lsa, weighting=False)
-coauthor_similarity_lsa = pd.DataFrame(np.asarray(coauthor_vectors_lsa).dot(coauthor_vectors_lsa.T),
-                                       index=coauthor_vectors_lsa.index.values,
-                                       columns=coauthor_vectors_lsa.index.values)
+# coauthor_vectors_lsa = vector_average(dtm_authors, author_vectors_lsa, weighting=True)
+# coauthor_similarity_lsa = pd.DataFrame(np.asarray(coauthor_vectors_lsa).dot(coauthor_vectors_lsa.T),
+#                                        index=coauthor_vectors_lsa.index.values,
+#                                        columns=coauthor_vectors_lsa.index.values)
+coauthor_similarity_lsa = pd.DataFrame(np.asmatrix(coauthor_doc_vectors_lsa) * np.asmatrix(coauthor_doc_vectors_lsa).T,
+                                       index=coauthor_doc_vectors_lsa.index.values,
+                                       columns=coauthor_doc_vectors_lsa.index.values)
 construct_similarity_lsa_authors = pd.DataFrame(np.zeros([len(var_ids_authors), len(var_ids_authors)]),
                                                 index=var_ids_authors, columns=var_ids_authors)
 for i in var_ids_authors:  # Fill construct similarity matrix with coauthor group similarities.
@@ -1092,18 +1149,18 @@ print("Pearson correlation and significance between LSA on items and LSA on auth
       pearsonr(np.asarray(construct_similarity_lsa.loc[var_ids_authors, var_ids_authors])[triu_indices],
                np.asarray(construct_similarity_lsa_authors)[triu_indices]), "\n")
 
-# Perform grid search on GloVe self-trained on author corpus with unweighted vector average for speed.
+# Perform grid search on GloVe self-trained on author corpus with vector average for speed.
 # You can train GloVe with best parameters afterwards.
 try:
     glove_results_auth = pd.read_csv('GloVe_search_results_auth.csv', index_col=0).values.tolist()
 except FileNotFoundError:
     glove_results_auth = []
-search_n_components_auth = [50, 100, 150, 200]
-search_alpha_auth = [0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
-search_x_max_auth = [10, 25, 40, 55, 70, 85, 100]
-search_step_size_auth = [0.002, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1, 0.2]
+search_n_components_auth = [70, 100, 130]
+search_alpha_auth = [0.4, 0.5, 0.6, 0.7, 0.8]
+search_x_max_auth = [10, 40, 70, 100]
+search_step_size_auth = [0.005, 0.0075, 0.01, 0.025, 0.05, 0.15, 0.3]
 search_n_epochs_auth = [50]
-search_weighting_auth = [False]
+search_weighting_auth = [False, True]
 search_grid_auth = [[n_comp, alpha, x_max, step_size, n_epochs, weighting] for n_comp in search_n_components_auth
                     for alpha in search_alpha_auth for x_max in search_x_max_auth
                     for step_size in search_step_size_auth for n_epochs in search_n_epochs_auth
@@ -1178,7 +1235,7 @@ if verbose:
     y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['alpha'].isin([x]), 'roc_auc']) for x in x_plt]
     e_plt = [np.std(glove_results_auth.loc[glove_results_auth['alpha'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 1)
-    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='ko', capsize=4)
     plt.xlabel('alpha')
     plt.ylabel('mean roc_auc')
     # Training x_max.
@@ -1186,17 +1243,17 @@ if verbose:
     y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['x_max'].isin([x]), 'roc_auc']) for x in x_plt]
     e_plt = [np.std(glove_results_auth.loc[glove_results_auth['x_max'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 2)
-    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='ko', capsize=4)
     plt.xlabel('x_max')
     plt.ylabel('mean roc_auc')
-    plt.title('GloVe prototype hyperparameter search for authors')
+    plt.title('GloVe on authors hyperparameter search\n')
     # Training step size.
     x_plt = np.unique(glove_results_auth['step_size'])
     y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['step_size'].isin([x]), 'roc_auc']) for x in x_plt]
     e_plt = [np.std(glove_results_auth.loc[glove_results_auth['step_size'].isin([x]), 'roc_auc'], axis=0) for x in
              x_plt]
     plt.subplot(2, 3, 3)
-    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='ko', capsize=4)
     plt.xlabel('step_size')
     plt.ylabel('mean roc_auc')
     # Number of training epochs.
@@ -1204,7 +1261,7 @@ if verbose:
     y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['n_epochs'].isin([x]), 'roc_auc']) for x in x_plt]
     e_plt = [np.std(glove_results_auth.loc[glove_results_auth['n_epochs'].isin([x]), 'roc_auc'], axis=0) for x in x_plt]
     plt.subplot(2, 3, 4)
-    plt.errorbar(x_plt, y_plt, e_plt, fmt='o', capsize=4)
+    plt.errorbar(x_plt, y_plt, e_plt, fmt='ko', capsize=4)
     plt.xlabel('n_epochs')
     plt.ylabel('mean roc_auc')
     # Weighting in vector averaging.
@@ -1213,7 +1270,7 @@ if verbose:
     e_plt = [np.std(glove_results_auth.loc[glove_results_auth['weighting'].isin([x]), 'roc_auc'], axis=0) for x in
              x_plt]
     plt.subplot(2, 3, 5)
-    plt.bar(x_plt, y_plt, yerr=e_plt, capsize=4)
+    plt.bar(x_plt, y_plt, yerr=e_plt, capsize=4, color='w', edgecolor='k')
     plt.xlim(-0.5, 1.5)
     plt.xlabel('weighting')
     plt.ylabel('mean roc_auc')
@@ -1221,15 +1278,16 @@ if verbose:
     x_plt = np.unique(glove_results_auth['n_comp'])
     y_plt = [np.mean(glove_results_auth.loc[glove_results_auth['n_comp'].isin([x]), 'roc_auc']) for x in x_plt]
     plt.subplot(2, 3, 6)
-    plt.scatter(x_plt, y_plt)
+    plt.scatter(x_plt, y_plt, c='k', marker='.')
     plt.xlabel('n_comp')
     plt.ylabel('mean roc_auc')
-    plt.subplots_adjust(wspace=0.3, hspace=0.4)
+    plt.subplots_adjust(wspace=0.45, hspace=0.3)
+    plt.savefig('GloVe_search_results_auth.png')
     plt.show(block=False)
 
 # Compute construct similarity matrix with GloVe on author corpus.
-vector_dict_glove_authors, loss_glove_authors = train_vectors_glove(ttd_authors, n_components=100, alpha=0.75,
-                                                                    x_max=100.0, step_size=0.05, n_epochs=25,
+vector_dict_glove_authors, loss_glove_authors = train_vectors_glove(ttd_authors, n_components=100, alpha=0.4,
+                                                                    x_max=70.0, step_size=0.3, n_epochs=50,
                                                                     batch_size=64, workers=2, verbose=verbose)
 vector_dict_glove_authors = {dict_ix_term_authors[key]: value for key, value in
                              vector_dict_glove_authors.items()}  # Translate indices.
@@ -1266,16 +1324,26 @@ if verbose:
     # Plot ROC curves.
     plt.figure()
     plt.grid(True)
-    plt.plot(fpr_lsa, tpr_lsa)
-    plt.plot(fpr_preglove, tpr_preglove)
-    plt.plot(fpr_trglove, tpr_trglove)
-    plt.plot(fpr_auth, tpr_auth)
-    plt.plot(fpr_lsa_auth, tpr_lsa_auth)
-    plt.plot(fpr_glove_auth, tpr_glove_auth)
+    plt.plot(fpr_lsa, tpr_lsa, 'k-')
+    plt.plot(fpr_preglove, tpr_preglove, 'k-.')
+    plt.plot(fpr_trglove, tpr_trglove, 'k--')
     plt.xlabel("False Positive Rate (FPR)")
     plt.ylabel("True Positive Rate (TPR)")
-    plt.legend(["LSA", "preGloVe", "trGloVe", "authors", "LSA authors", "GloVe authors"])
+    plt.legend(["LSA", "preGloVe", "trGloVe"])
+    plt.savefig('ROC_items.png')
     plt.show()
+
+    plt.figure()
+    plt.grid(True)
+    plt.plot(fpr_auth, tpr_auth, 'k-')
+    plt.plot(fpr_lsa_auth, tpr_lsa_auth, 'k-.')
+    # plt.plot(fpr_glove_auth, tpr_glove_auth, 'k--')
+    plt.xlabel("False Positive Rate (FPR)")
+    plt.ylabel("True Positive Rate (TPR)")
+    plt.legend(["authors", "LSA authors", "GloVe authors"])
+    plt.savefig('ROC_authors.png')
+    plt.show()
+
 
 
 # TODO: -----------------------------------------
