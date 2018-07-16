@@ -19,6 +19,7 @@ import editdistance
 import glove
 import csv
 import os.path
+import sys
 import gc  # Garbage collector.
 import warnings
 import matplotlib.pyplot as plt
@@ -470,10 +471,8 @@ def load_term_vectors_glove(file_name, target_terms, new_reduce_dict=False, verb
                                            quoting=csv.QUOTE_NONE):  # Read word vector file in chunks to fit in RAM.
                     # Reduce chunk to the vectors starting with the current letter.
                     chunk = chunk.iloc[np.asarray([c == str(key)[0] for key in chunk.index.values])]
-                    with warnings.catch_warnings():
-                        warnings.simplefilter('ignore')  # Some NaturalNameWarnings for names like 'and', 'in', ...
-                        # Add word vectors starting with current letter to the DataFrame.
-                        df_temp = pd.concat([df_temp, chunk], copy=False)
+                    # Add word vectors starting with current letter to the DataFrame.
+                    df_temp = pd.concat([df_temp, chunk], copy=False)
                     ctr += 1
                     if verbose:
                         print("Processed chunk", ctr, "with size", chunk_size, "for letter", c)
@@ -491,25 +490,33 @@ def load_term_vectors_glove(file_name, target_terms, new_reduce_dict=False, verb
             if verbose:
                 print("Full GloVe vector file converted to pandas HDF5 file.")
 
-        # Create vector dictionary of relevant terms from .h5 file.
         vector_dict = {}
         ctr = 0
-
-        target_terms = ['technology', 'situation', 'use']
-
         with pd.HDFStore(file_name_hdf) as hdf:
-            for term in target_terms:
-                try:
-                    vector_dict[term] = np.asarray(hdf.get(term[0]).loc[term])
-                except KeyError:
-                    pass  # deal with out of vocabulary words in term_vectors_from_dict(...)
-                ctr += 1
-                if verbose and ctr % 200 == 0:
-                    print("Creating GloVe vector dictionary of relevant terms...", ctr / len(target_terms) * 100, "%",
-                          end="\r")
+            hdf.open()
+            # For every first letter, load the respective DataFrame from the HDFStore. Extract relevant term vectors.
+            # Delete DataFrame after use and go to next letter.
+            for c in 'abcdefghijklmnopqrstuvwxyz':
+                df_temp = hdf.select(c)
+                # Select target terms that start with the current letter.
+                target_terms_c = np.asarray(target_terms)[np.asarray([c == str(term)[0] for term in target_terms])]
+                for term in target_terms_c:
+                    try:
+                        # Append vector dictionary with term vector.
+                        vector_dict[term] = np.asarray(df_temp.loc[term])
+                    except KeyError:
+                        pass  # deal with out of vocabulary words in term_vectors_from_dict(...)
+                    ctr += 1
+                    if verbose and ctr % 200 == 0:
+                        print("Creating GloVe vector dictionary of relevant terms...", ctr / len(target_terms) * 100,
+                              "%",
+                              end="\r")
+                del df_temp
+                gc.collect()
             hdf.close()
         del hdf
         gc.collect()
+
         np.save(file_name[:-4] + '_reduced.npy', vector_dict)
     return vector_dict
 
@@ -859,10 +866,10 @@ def test_e():
 
 # Define central parameters.
 prototype = False
-stemmer = None
+stemmer = 'porter2'
 ignore_chars = '''.,:;"'!?_-/()[]{}&%0123456789'''
 dtm_processing = 'tfidf_l2'  # 'count', 'l2', 'tfidf_l2', 'log_l2'
-glove_pretrained_filename = 'glove-pre-trained/glove.840B.300d.txt'
+glove_pretrained_filename = 'glove-pre-trained/glove.6B.300d.txt'
 glove_new_reduce_dict = True
 verbose = True
 
@@ -936,7 +943,7 @@ item_similarity_methods = pd.DataFrame(
                             np.asarray(item_similarity_lsa_avg)[np.triu_indices(len(item_similarity_lsa), k=1)],
                             np.asarray(item_similarity_lsa_avg_tfidf)[np.triu_indices(len(item_similarity_lsa), k=1)],
                             np.asarray(item_similarity_lsa_agg)[np.triu_indices(len(item_similarity_lsa), k=1)]]).T),
-    columns=['LSA dvec', 'LSA avg', 'LSA avg tfidf', 'LSA agg'])
+    columns=['LSA dvec', 'LSA cent', 'LSA cent tfidf', 'LSA agg'])
 print("Correlation table for item similarity methods.")
 print(item_similarity_methods.corr())
 
@@ -1143,11 +1150,6 @@ for i in var_ids_authors:  # Fill construct similarity matrix with coauthor grou
 fpr_lsa_auth, tpr_lsa_auth, roc_auc_lsa_auth = evaluate(construct_similarity_lsa_authors,
                                                         construct_identity_gold_authors)
 print("ROC AUC LSA authors =", roc_auc_lsa_auth, "\n")
-
-# Pearson correlation coefficient between construct similarity computed with reduced LSA items and with LSA authors.
-print("Pearson correlation and significance between LSA on items and LSA on authors:\n",
-      pearsonr(np.asarray(construct_similarity_lsa.loc[var_ids_authors, var_ids_authors])[triu_indices],
-               np.asarray(construct_similarity_lsa_authors)[triu_indices]), "\n")
 
 # Perform grid search on GloVe self-trained on author corpus with vector average for speed.
 # You can train GloVe with best parameters afterwards.
