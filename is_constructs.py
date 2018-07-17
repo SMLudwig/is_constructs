@@ -3,12 +3,8 @@ from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import Normalizer
 from sklearn.decomposition import TruncatedSVD
-from sklearn.linear_model import LinearRegression
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve
 from sklearn.metrics import roc_auc_score
-
-from scipy.stats.stats import pearsonr
 
 from stemming.porter2 import stem as stem_porter2
 from stemming.paicehusk import stem as stem_paicehusk
@@ -19,13 +15,13 @@ import editdistance
 import glove
 import csv
 import os.path
-import sys
 import gc  # Garbage collector.
 import warnings
 import matplotlib.pyplot as plt
 
 
 def info(var):
+    """Gives basic information on the passed object. Only used for prototyping and testing."""
     if isinstance(var, np.ndarray):
         print("Type:", type(var), "\nShape:", np.shape(var))
     else:
@@ -33,15 +29,18 @@ def info(var):
 
 
 def recreate_construct_identity_gold(gold_standard, pool_ids, full_var_ids=None):
-    """Translates the gold standard by Larsen and Bong 2016 into a binary construct identity matrix.
+    """Translates the gold standard by Larsen and Bong 2016 into a binary construct identity matrix with ID labeling.
     Pass full_var_ids if not prototyping, since not all variable ids are present in pools."""
     # Implementation checked 28 June.
     if full_var_ids is not None:
         variable_ids = full_var_ids
     else:
+        # Get variable IDs that are contained in the passed variable pools.
         variable_ids = np.sort(np.unique(gold_standard['VariableID'][gold_standard['Poolid'].isin(pool_ids)]))
+    # Create empty DataFrame with labeling.
     construct_identity_gold = np.zeros([len(variable_ids), len(variable_ids)])
     construct_identity_gold = pd.DataFrame(construct_identity_gold, index=variable_ids, columns=variable_ids)
+    # Fill upper triangular with binary construct identities.
     for pool_id in pool_ids:
         pool_var_ids = np.asarray(gold_standard['VariableID'][gold_standard['Poolid'] == pool_id])
         for ind_1 in range(len(pool_var_ids) - 1):
@@ -73,6 +72,7 @@ def test_rcig():
 def load_data(prototype=False, max_editdistance=1, verbose=False):
     """Load data. construct_authors are indexed by the matching construct ID in Funk's dataset. Use funk2gold to
     translate the IDs to matching gold IDs."""
+    # Load the dataset provided by (Larsen & Bong, 2016).
     file = r'LarsenBong2016GoldStandard.xls'
     gold_standard = pd.read_excel(file, sheet_name='GoldStandard')
     gold_items = pd.read_excel(file, sheet_name='Items')
@@ -87,11 +87,10 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
         variable_ids = np.sort(np.unique(gold_standard['VariableID'][gold_standard['Poolid'].isin(pool_ids)]))
     else:
         pool_ids = np.sort(gold_standard['Poolid'].unique())
-        # variable_ids = sorted(list(set(gold_items['VariableId'])))
         variable_ids = np.sort(gold_items['VariableId'].unique())
     gold_items = gold_items.loc[gold_items['VariableId'].isin(variable_ids)]
 
-    # Load the gold standard as matrix DataFrame
+    # Load or recreate the gold standard as binary matrix DataFrame.
     if prototype:
         try:
             construct_identity_gold = pd.read_pickle('construct_identity_gold_prototype.df')
@@ -115,6 +114,7 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
     funk_papers = pd.read_excel(file)
     file = r'datasetFunk/FunkConstructs.xlsx'
     funk_constructs = pd.read_excel(file)
+
     # Get unique construct IDs from Larsen's and Funk's dataset.
     gold_construct_ids = np.unique(gold_items['VariableId'])
     funk_construct_ids = np.unique(funk_constructs['ConstructID'])
@@ -128,7 +128,7 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
         print("No construct editdistance file found. Creating new file...")
         if prototype:
             warnings.warn("Computing distances in prototype mode. Remember to delete file for full mode.")
-        # Remove ignore characters from construct names to make them more comparable. Add parsed names to DataFrames.
+        # Remove ignore characters from construct names to make them more comparable, add them to the DataFrames.
         ignore_chars = '''.,:;"'!?-/()[]{}&%0123456789'''
         gold_names_parsed = [' '.join(name.translate({ord(c): ' ' for c in ignore_chars}).lower().split())
                              for name in gold_items['VariableName']]
@@ -137,15 +137,17 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
                              for name in funk_constructs['ConstructName']]
         funk_constructs['ConstructNameParse'] = funk_names_parsed
 
-        # TODO: could create two dicts ID: ConstructName to speed this up.
+        # TODO: could create two dicts {ID: ConstructName} to try to speed this up.
         # Evaluate distances and fill new DataFrame.
         construct_distances = pd.DataFrame(np.zeros([len(gold_construct_ids), len(funk_construct_ids)]),
                                            index=gold_construct_ids, columns=funk_construct_ids)
         ctr = 0
         for gold_id in gold_construct_ids:
             for funk_id in funk_construct_ids:
+                # Get one gold construct name and one Funk construct name.
                 gold_name = gold_items.loc[gold_items['VariableId'] == gold_id, 'VariableNameParse'].iloc[0]
                 funk_name = funk_constructs.loc[funk_constructs['ConstructID'] == funk_id, 'ConstructNameParse'].iloc[0]
+                # Evaluate the distance between the construct names.
                 distance = editdistance.eval(gold_name, funk_name)
                 construct_distances[funk_id][gold_id] = distance  # DataFrames access columns first, then rows.
             ctr += 1
@@ -154,7 +156,7 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
                       flush=True)
         construct_distances.to_pickle('construct_editdistances.df')
 
-    # Create construct ID translation dictionary between Larsen' and Funk's dataset. Simply uses the first match.
+    # Create construct ID translation dictionary between Larsen' and Funk's datasets. Simply uses the first match.
     # TODO: deal with multiple matches.
     funk2gold = {}
     ctr = 0
@@ -166,10 +168,10 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
             try:
                 if construct_distances[funk_id][gold_id] <= max_editdistance:
                     funk2gold[funk_id] = gold_id
-                    # Break to go to the next funk_id, so that every id gets only matched once.
+                    # Break to go to the next funk_id (outer loop), so that every ID gets only matched once.
                     break
             except KeyError:
-                print("Check whether editdistances were created on prototype or full dataset.")
+                print("KeyError: Check whether editdistances were created on prototype or full dataset.")
                 raise
         ctr += 1
         if verbose and ctr % 200 == 0:
@@ -178,15 +180,16 @@ def load_data(prototype=False, max_editdistance=1, verbose=False):
     if verbose:
         print("Related", len(funk_construct_ids), "Funk constructs to", len(gold_construct_ids), "gold constructs.")
         print(len(funk2gold), "matches found with Levenshtein distance <=", max_editdistance, "\n")
+    # Create mirrored ID translation dictionary for the other direction.
     gold2funk = {g: f for f, g in funk2gold.items()}
 
     # Get authors of the constructs in Funk's dataset.
     # Implementation checked 4 July.
     construct_authors = {}
     for construct_id in funk_construct_ids:
-        # Get PaperID related to a specific ConstructID
+        # Get PaperID related to a specific ConstructID.
         paper_id = funk_constructs.loc[funk_constructs['ConstructID'].isin([construct_id])]['PaperID']
-        # Get Author of specific PaperID
+        # Get authors of specific PaperID.
         authors = funk_papers.loc[funk_papers['PaperID'].isin([paper_id])]['Author']
         construct_authors[construct_id] = np.asarray(authors)[0]
 
@@ -212,41 +215,46 @@ def parse_text(documents, stemmer=None, lower=True, remove_stop_words=True,
                return_config=False, ignore_chars='''.,:;"'!?-/()[]{}&%0123456789''', verbose=False):
     """Parses text with options for removing specified characters, removing stop-words, converting to lower-case
     and stemming (https://pypi.org/project/stemming/1.0/). Available stemming algorithms are 'porter2' and
-    'paicehusk'. Paice/Husk seems prone to over-stemming."""
-    # TODO: still returns empty '' strings. Also returns "'s".
+    'paicehusk'. Paice/Husk seems prone to over-stemming.
+    Can return the configuration of the stemmer used (for stemming words of pre-trained GloVe vectors)."""
     # Implementation checked 28 June.
     parsed_docs = []
     error_words = []
     for i in range(len(documents)):
         assert isinstance(documents[i], str), "Document not a string:" + str(documents[i])
         if ignore_chars != '':
+            # Remove ignore-characters.
             documents[i] = ' '.join(documents[i].translate({ord(c): ' ' for c in ignore_chars}).split())
         if lower:
+            # Convert to lower case.
             documents[i] = documents[i].lower()
         parsed_docs.append('')
         for word in documents[i].split():
+            # Skip the word if it is a stop word.
             if remove_stop_words and word in stop_words.ENGLISH_STOP_WORDS:
                 continue
-            # TODO: what does this do?
+            # TODO: what does this do? Probably redundant, connected to removed stop words.
             if word == '':
                 continue
             if stemmer is not None:
                 try:
-                    # TODO: remove default, check if stemmer exists instead
+                    # TODO: remove return of default, check if stemmer exists instead
                     parsed_docs[i] += {
                         # 'lovins': stem_lovins(word) + ' ', results in errors with all three algorithms, unknown cause
                         'porter2': stem_porter2(word) + ' ',
                         'paicehusk': stem_paicehusk(word) + ' '
                     }.get(stemmer, word + ' ')
                 except ValueError:
+                    # ValueError occurs when stemming certain words.
                     error_words.append(word)
                     parsed_docs[i] += word + ' '
             else:
                 parsed_docs[i] += word + ' '
-        parsed_docs[i] = ' '.join(parsed_docs[i].split())  # remove excess white space
+        # Remove excess white space.
+        parsed_docs[i] = ' '.join(parsed_docs[i].split())
     if verbose and error_words:
         print("ValueError occurred when stemming the following words:", list(set(error_words)), "\n")
-    parsed_docs = list(filter(None, parsed_docs))
+    parsed_docs = list(filter(None, parsed_docs))  # What does this do?
     parsed_docs = np.asarray(parsed_docs)
     parser_config = {'stemmer': stemmer, 'lower': lower, 'remove_stop_words': remove_stop_words,
                      'ignore_chars': ignore_chars}
@@ -276,7 +284,7 @@ def test_pt():
 
 
 def document_term_cooccurrence(corpus, processing='tfidf_l2'):
-    """Creates and returns document-term matrix DataFrame with the specified processing method.
+    """Creates and returns a document-term matrix DataFrame with the specified processing method.
     Also returns the feature names (terms) extracted by the vectorizer. Available processing methods are
     'count', 'l2', 'tfidf_l2' and 'log_l2'."""
     # Implementation checked superficially 28 June.
@@ -293,9 +301,7 @@ def document_term_cooccurrence(corpus, processing='tfidf_l2'):
         dt_matrix_tfidf_l2 = tfidf_vectorizer.fit_transform(corpus)
         dt_matrix_tfidf_l2 = dt_matrix_tfidf_l2.toarray()
         return pd.DataFrame(dt_matrix_tfidf_l2, index=corpus, columns=terms), terms
-    # print(pd.DataFrame(dt_matrix, index=item_corpus, columns=count_vectorizer.get_feature_names()).head(5))
     if processing == 'log_l2':
-        # TODO: Gives RuntimeWarning: divide by zero encountered in log
         # Apply log entropy and L2 normalization to count matrix.
         # https://radimrehurek.com/gensim/models/logentropy_model.html
         # Implementation checked manually.
@@ -328,14 +334,15 @@ def test_dtc():
 
 
 def term_term_cooccurrence(dt_matrix, verbose=False):
-    """Creates sparse term-term cooccurrence dictionary from dot product of passed document-term matrix."""
+    """Creates a sparse term-term cooccurrence dictionary from dot product of passed document-term matrix.
+    # Indexes terms in corpus and returns both {index: term} and {term: index} to translate in both directions."""
     # Implementation checked 30 June.
-    # Index terms in corpus, both as index -> term and as term -> index to translate in both directions.
-    s = ' '
     terms = dt_matrix.columns.values
+    # Index terms and create translation dictionaries.
     dict_ix_term = {i: terms[i] for i in range(len(terms))}
     dict_term_ix = {v: k for k, v in dict_ix_term.items()}
     terms_ix = [dict_term_ix[term] for term in terms]
+    # Create term-term co-occurrence matrix as the dot product of the document-term matrix.
     tt_matrix = np.asarray(dt_matrix).T.dot(np.asarray(dt_matrix))
     tt_matrix = pd.DataFrame(tt_matrix, index=terms_ix, columns=terms_ix)
     # Convert term-term co-occurrence matrix to sparse term-term co-occurrence dictionary.
@@ -372,7 +379,8 @@ def test_ttc():
 
 
 def term_vectors_from_dict(vector_dict, target_terms, normalize=True, verbose=False):
-    """Creates term-vector matrix DataFrame of passed terms from passed vector dict."""
+    """Creates a matrix DataFrame with term vectors of the passed terms from the passed vector dictionary.
+    Sets term vectors for out-of-vocabulary terms to 0."""
     # TODO: deal with OOV words better than just setting a zero vector.
     # Implementation checked 28 June.
     term_vectors = np.zeros([len(target_terms), len(next(iter(vector_dict.values())))])
@@ -382,12 +390,14 @@ def term_vectors_from_dict(vector_dict, target_terms, normalize=True, verbose=Fa
         try:
             term_vectors[i] = vector_dict[term]
         except KeyError:
+            # OOV word, set vector to 0.
             term_vectors[i] = np.zeros(len(next(iter(vector_dict.values()))))
             ctr_oov += 1
         i += 1
     if verbose:
         print("Created term vectors from dictionary.", ctr_oov, "OOV words.")
     if normalize:
+        # L2 normalization.
         term_vectors = Normalizer(norm='l2', copy=True).fit_transform(term_vectors)
     term_vectors = pd.DataFrame(term_vectors, index=target_terms)
     return term_vectors
@@ -413,11 +423,13 @@ def train_vectors_lsa(dt_matrix, n_components=300, return_doc_vectors=False):
     # Implementation checked 28 June.
     assert len(dt_matrix) >= n_components, \
         "n docs must be >= n components. " + str(len(dt_matrix)) + " < " + str(n_components)
+    # Train LSA and get document vectors.
     documents = dt_matrix.index.values
     terms = dt_matrix.columns.values
     t_svd = TruncatedSVD(n_components=n_components, algorithm='randomized')
     doc_vectors = t_svd.fit_transform(np.asarray(dt_matrix))
     doc_vectors = pd.DataFrame(doc_vectors, index=documents)
+    # Get term vectors and pack them into a dictionary.
     source_term_vectors = t_svd.components_
     source_term_vectors = pd.DataFrame(source_term_vectors, columns=terms)
     vector_dict = source_term_vectors.to_dict(orient='list')
@@ -449,9 +461,10 @@ def test_ttvlsa():
 
 
 def load_term_vectors_glove(file_name, target_terms, new_reduce_dict=False, verbose=False):
-    """Loads pre-trained GloVe term vectors from file. If option new_reduce_dict=True, load full dictionary and
+    """Loads pre-trained GloVe term vectors from file. If no HDFStore is found, creates a new HDFStore with all
+    terms starting with a letter of the standard alphabet. This allows for the use of files larger than RAM.
+    If option new_reduce_dict=True, load full dictionary and
     reduce it to the passed target_terms, save reduced dict to .npy file."""
-    # Implementation unchecked.
     file_name_hdf = file_name[:-4] + '.h5'
     if not new_reduce_dict:
         vector_dict = np.load(file_name).item()
@@ -461,9 +474,10 @@ def load_term_vectors_glove(file_name, target_terms, new_reduce_dict=False, verb
         if not os.path.isfile(file_name_hdf):  # Create new .h5 file if it does not exist.
             if verbose:
                 print("No HDF5 file found. Creating new file, this will take some time...")
-            # Convert full vector file to pandas hdf5 file. This allows to create different vector dictionaries.
+            # Convert full vector file to pandas HDF5 file. This allows to create different vector dictionaries.
             hdf = pd.HDFStore(file_name_hdf)
             chunk_size = 64 * 1024
+            # For every first letter, go through the whole file of pre-trained vectors in chunks and create a DataFrame.
             for c in 'abcdefghijklmnopqrstuvwxyz':
                 ctr = 0
                 df_temp = pd.DataFrame()
@@ -490,6 +504,7 @@ def load_term_vectors_glove(file_name, target_terms, new_reduce_dict=False, verb
             if verbose:
                 print("Full GloVe vector file converted to pandas HDF5 file.")
 
+        # Create vector dictionary of the relevant terms from the HDFStore.
         vector_dict = {}
         ctr = 0
         with pd.HDFStore(file_name_hdf) as hdf:
@@ -566,26 +581,26 @@ def train_vectors_glove(tt_dict, n_components=300, alpha=0.75, x_max=100.0, step
                         batch_size=64, workers=2, verbose=False):
     """Trains vector dictionary from the passed term-term dictionary with the passed hyperparameters.
     Glove.init()
-    cooccurrence dict<int, dict<int, float>> : the co-occurence matrix
-    alpha float : (default 0.75) hyperparameter for controlling the exponent for normalized co-occurrence counts.
-    x_max float : (default 100.0) hyperparameter for controlling smoothing for common items in co-occurrence matrix.
-    d int : (default 50) how many embedding dimensions for learnt vectors
-    seed int : (default 1234) the random seed
+        cooccurrence dict<int, dict<int, float>> : the co-occurence matrix
+        alpha float : (default 0.75) hyperparameter for controlling the exponent for normalized co-occurrence counts.
+        x_max float : (default 100.0) hyperparameter for controlling smoothing for common items in co-occurrence matrix.
+        d int : (default 50) how many embedding dimensions for learnt vectors
+        seed int : (default 1234) the random seed
     Glove.train()
-    step_size float : the learning rate for the model
-    n_epochs int : the number of iterations over the full dataset
-    workers int : number of worker threads used for training
-    batch_size int : how many examples should each thread receive (controls the size of the job queue)"""
+        step_size float : the learning rate for the model
+        n_epochs int : the number of iterations over the full dataset
+        workers int : number of worker threads used for training
+        batch_size int : how many examples should each thread receive (controls the size of the job queue)"""
     # Implementation checked 30 June.
     model = glove.Glove(tt_dict, d=n_components, alpha=alpha, x_max=x_max)
+    # Train the model.
     epoch_loss = []
     for epoch in range(n_epochs):
         error = model.train(step_size=step_size, batch_size=batch_size, workers=workers)
         epoch_loss.append(error)
         if verbose:
             print("GloVe training epoch %d, error %.5f" % (epoch + 1, error), flush=True)
-    # if verbose:
-    #     print("\n")
+    # Get the word vectors and convert them to a dictionary.
     vector_matrix = model.W
     vector_dict = {ix: list(vector_matrix[ix]) for ix in tt_dict.keys()}
     return vector_dict, np.asarray(epoch_loss)
@@ -611,17 +626,19 @@ def test_tvg():
 
 
 def vector_average(dt_matrix, term_vectors, weighting=False, normalize=True):
-    """Compute vector average of term vectors to form item vectors. If idf-weights are passed,
-    weighted vector centroid is computed."""
+    """Compute the vector centroid of term vectors to form item vectors. If weighting=True,
+    weighted vector centroid is computed with the entries of the passed dt_matrix."""
     # Implementation checked 13 July.
     doc_vectors = pd.DataFrame(np.zeros([len(dt_matrix), len(term_vectors.iloc[0])]), index=dt_matrix.index.values)
     for i in range(len(dt_matrix)):
+        # Get the vectors of the terms in the current document.
         doc_term_vectors = term_vectors.loc[dt_matrix.columns.values[dt_matrix.iloc[i] > 0]]
         if weighting:
-            # Take tf-idf-weighted centroid.
+            # Weight the term vectors.
             weights = dt_matrix.iloc[i][dt_matrix.iloc[i] > 0]
             for w_ix in weights.index.values:
                 doc_term_vectors.loc[w_ix] = np.asarray(doc_term_vectors.loc[w_ix]) * float(weights.loc[w_ix])
+        # Take the simple mean of the term vectors to form a document vector.
         doc_vectors.iloc[i] = np.mean(np.asarray(doc_term_vectors), axis=0)
     if normalize:
         # TODO: some nan values in the doc-vectors.
@@ -667,10 +684,9 @@ def test_va():
 
 
 def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose=False):
-    """Computes item similarities from terms in vector space. To aggregate term cosine similarity to item
+    """Computes item similarities from term vectors. To aggregate term cosine similarity to item
     similarity, the average similarity of the two most similar terms between each item pair is taken. This is
-    the same concept as established by Larsen and Bong 2016 for aggregating construct similarity."""
-    # TODO: implementation is completely agnostic to dt_matrix processing, e.g. normalizing -> try weighted avg
+    the same concept as established by (Larsen & Bong, 2016) for aggregating construct similarity."""
     # Implementation checked 28 June.
     # Compute cosine term similarity as matrix.
     term_similarity = np.asarray(np.asmatrix(term_vectors) * np.asmatrix(term_vectors).T)
@@ -684,8 +700,8 @@ def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose
     item_similarity = np.zeros([len(dt_matrix), len(dt_matrix)])
     n_fields = (len(item_similarity) ** 2 - len(item_similarity)) / 2  # n fields in upper triu for print
     ctr = 0  # counter for print
-    ctr_one = 0  # counter for item-relationships with only one non-zero term similarity
-    ctr_none = 0  # counter for item-relationships with no non-zero term similarity
+    ctr_one = 0  # counter for item-relationships with only one non-zero term similarity (OOV words)
+    ctr_none = 0  # counter for item-relationships with no non-zero term similarity (OOV words)
     for ind_1 in range(len(dt_matrix) - 1):  # rows
         for ind_2 in range(ind_1 + 1, len(dt_matrix)):  # columns
             # Implementation checked manually, excluding exception handling.
@@ -713,7 +729,7 @@ def aggregate_item_similarity(dt_matrix, term_vectors, n_similarities=2, verbose
     if verbose:
         print("Number of item-relationships with only one non-zero term similarity due to OOV:", ctr_one)
         print("Number of item-relationships with no non-zero term similarity due to OOV:", ctr_none, "\n")
-    # Mirror lower triangular and fill diagonal of the matrix.
+    # Mirror to lower triangular and fill diagonal of the matrix.
     item_similarity = np.add(item_similarity, item_similarity.T)
     np.fill_diagonal(item_similarity, 1)
     item_similarity = pd.DataFrame(item_similarity, index=items, columns=items)
@@ -758,10 +774,11 @@ def test_ais():
 
 def aggregate_construct_similarity(constituent_similarity, gold_items, variable_ids, construct_authors=None,
                                    n_similarities=2, verbose=False):
-    """Computes construct similarities from items or authors in vector space. To aggregate constituent
+    """Computes construct similarities from item vectors. To aggregate constituent
     cosine similarity to construct similarity, the average similarity of the two most similar constituents
-    between each construct pair is taken, as established by Larsen and Bong 2016 with items.
-    Creates upper triangular with zero diagonal for efficiency."""
+    between each construct pair is taken, as established by (Larsen & Bong, 2016) with items.
+    Creates upper triangular with zero diagonal for efficiency.
+    Some legacy support for author aggregation, but better to use centroids and cosine similarity."""
     # Implementation checked 4 July.
     authors = constituent_similarity.index.values
     constituent_similarity = np.asarray(constituent_similarity)
@@ -777,7 +794,7 @@ def aggregate_construct_similarity(constituent_similarity, gold_items, variable_
                     constit_ix_1 = np.where(authors == construct_authors[gold2funk[variable_ids[ind_1]]])[0]
                     constit_ix_2 = np.where(authors == construct_authors[gold2funk[variable_ids[ind_2]]])[0]
                 except KeyError:
-                    # TODO: deal with constructs that have unknown authors better
+                    # Set construct similarity to 0 for constructs with unknown author.
                     construct_similarity[ind_1, ind_2] = 0
                     break
             # Following implementation checked manually.
@@ -827,7 +844,7 @@ def test_acs():
 
 
 def evaluate(construct_similarity, construct_identity_gold):
-    """Evaluates construct similarity matrix against the Larsen and Bong 2016 gold standard in matrix form."""
+    """Evaluates construct similarity matrix against the (Larsen & Bong, 2016) gold standard with ROC AUC."""
     # Implementation checked 4 July.
     # Unwrap upper triangular of similarity and identity matrix, excluding diagonal.
     # Calculate Receiver Operating Characteristic (ROC) curve.
@@ -1112,7 +1129,7 @@ construct_similarity_trglove = aggregate_construct_similarity(item_similarity_tr
 fpr_trglove, tpr_trglove, roc_auc_trglove = evaluate(construct_similarity_trglove, construct_identity_gold)
 print("ROC AUC self-trained GloVe =", roc_auc_trglove, "\n")
 
-# Compute construct similarity based on normalized author co-occurrence matrix without creating a semantic space.
+# Compute construct similarity based on normalized author co-occurrence matrix (BOW) without creating a semantic space.
 coauthor_similarity = np.asarray(dtm_authors).dot(np.asarray(dtm_authors).T)
 coauthor_similarity = pd.DataFrame(coauthor_similarity, index=corpus_authors, columns=corpus_authors)
 construct_similarity_authors = pd.DataFrame(np.zeros([len(var_ids_authors), len(var_ids_authors)]),
@@ -1125,22 +1142,17 @@ fpr_auth, tpr_auth, roc_auc_auth = evaluate(construct_similarity_authors,
                                             construct_identity_gold_authors)
 print("ROC AUC authors =", roc_auc_auth, "\n")
 
-# Pearson correlation coefficient between construct similarity computed with reduced LSA items and with authors.
-print("Pearson correlation and significance between LSA on items and co-occurr authors:\n",
-      pearsonr(np.asarray(construct_similarity_lsa.loc[var_ids_authors, var_ids_authors])[triu_indices],
-               np.asarray(construct_similarity_authors)[triu_indices]), "\n")
-
 # Compute construct similarity matrix with LSA on author corpus.
 vector_dict_lsa_authors, coauthor_doc_vectors_lsa = train_vectors_lsa(dtm_authors, n_components=100,
                                                                       return_doc_vectors=True)
 author_vectors_lsa = term_vectors_from_dict(vector_dict_lsa_authors, terms_authors, normalize=True, verbose=verbose)
-# coauthor_vectors_lsa = vector_average(dtm_authors, author_vectors_lsa, weighting=True)
-# coauthor_similarity_lsa = pd.DataFrame(np.asarray(coauthor_vectors_lsa).dot(coauthor_vectors_lsa.T),
-#                                        index=coauthor_vectors_lsa.index.values,
-#                                        columns=coauthor_vectors_lsa.index.values)
-coauthor_similarity_lsa = pd.DataFrame(np.asmatrix(coauthor_doc_vectors_lsa) * np.asmatrix(coauthor_doc_vectors_lsa).T,
-                                       index=coauthor_doc_vectors_lsa.index.values,
-                                       columns=coauthor_doc_vectors_lsa.index.values)
+coauthor_vectors_lsa = vector_average(dtm_authors, author_vectors_lsa, weighting=False)
+coauthor_similarity_lsa = pd.DataFrame(np.asarray(coauthor_vectors_lsa).dot(coauthor_vectors_lsa.T),
+                                       index=coauthor_vectors_lsa.index.values,
+                                       columns=coauthor_vectors_lsa.index.values)
+# coauthor_similarity_lsa = pd.DataFrame(np.asmatrix(coauthor_doc_vectors_lsa) * np.asmatrix(coauthor_doc_vectors_lsa).T,
+#                                        index=coauthor_doc_vectors_lsa.index.values,
+#                                        columns=coauthor_doc_vectors_lsa.index.values)
 construct_similarity_lsa_authors = pd.DataFrame(np.zeros([len(var_ids_authors), len(var_ids_authors)]),
                                                 index=var_ids_authors, columns=var_ids_authors)
 for i in var_ids_authors:  # Fill construct similarity matrix with coauthor group similarities.
@@ -1229,7 +1241,7 @@ print(glove_results_auth_best, "\n")
 # Save grid search results.
 glove_results_auth.to_csv('GloVe_search_results_auth.csv')
 
-# Plot GloVe grid search results.
+# Plot GloVe on authors grid search results.
 if verbose:
     plt.figure(figsize=(10, 6))
     # Training alpha.
@@ -1294,7 +1306,7 @@ vector_dict_glove_authors, loss_glove_authors = train_vectors_glove(ttd_authors,
 vector_dict_glove_authors = {dict_ix_term_authors[key]: value for key, value in
                              vector_dict_glove_authors.items()}  # Translate indices.
 author_vectors_glove = term_vectors_from_dict(vector_dict_glove_authors, terms_authors, normalize=True, verbose=verbose)
-coauthor_vectors_glove = vector_average(dtm_authors, author_vectors_glove, weighting=False)
+coauthor_vectors_glove = vector_average(dtm_authors, author_vectors_glove, weighting=True)
 coauthor_similarity_glove = pd.DataFrame(np.asarray(coauthor_vectors_glove).dot(coauthor_vectors_glove.T),
                                          index=coauthor_vectors_glove.index.values,
                                          columns=coauthor_vectors_glove.index.values)
@@ -1323,7 +1335,8 @@ print("Correlations between all construct similarity measures:")
 print(all_similarity_correlations, "\n")
 
 if verbose:
-    # Plot ROC curves.
+    # Plot ROC curves for item and for author determination..
+    # Item determination.
     plt.figure()
     plt.grid(True)
     plt.plot(fpr_lsa, tpr_lsa, 'k-')
@@ -1335,119 +1348,14 @@ if verbose:
     plt.savefig('ROC_items.png')
     plt.show()
 
+    # Author determination.
     plt.figure()
     plt.grid(True)
-    plt.plot(fpr_auth, tpr_auth, 'k-')
-    plt.plot(fpr_lsa_auth, tpr_lsa_auth, 'k-.')
-    # plt.plot(fpr_glove_auth, tpr_glove_auth, 'k--')
+    plt.plot(fpr_auth, tpr_auth, 'k-.')
+    plt.plot(fpr_lsa_auth, tpr_lsa_auth, 'k-')
+    plt.plot(fpr_glove_auth, tpr_glove_auth, 'k--')
     plt.xlabel("False Positive Rate (FPR)")
     plt.ylabel("True Positive Rate (TPR)")
-    plt.legend(["authors", "LSA authors", "GloVe authors"])
+    plt.legend(["BOW authors", "LSA authors", "GloVe authors"])
     plt.savefig('ROC_authors.png')
     plt.show()
-
-
-
-# TODO: -----------------------------------------
-# TODO: ---------------- ARCHIVE ----------------
-
-
-def term_term_cooccurrence_scratch(corpus):
-    """Creates sparse term-term cooccurrence dictionary from passed corpus. Compared to using the dot product
-    of the dt_matrix, this implementation has the disadvantage of being harder to normalize."""
-    # Implementation checked 30 June.
-    # Index terms in corpus, both as index -> term and as term -> index to translate in both directions.
-    s = ' '
-    terms = np.unique(s.join(corpus).split())
-    dict_ix_term = {i: terms[i] for i in range(len(terms))}
-    dict_term_ix = {v: k for k, v in dict_ix_term.items()}
-    # Translate corpus to indices.
-    corpus = np.asarray([[dict_term_ix[term] for term in corpus[i].split()] for i in range(len(corpus))])
-    # Build the sparse term co-occurrence dictionary.
-    tt_dict = {i: {} for i in range(len(terms))}
-    for paragraph in corpus:
-        for ix_center_term in range(len(paragraph)):
-            for window_term in paragraph[:ix_center_term] + paragraph[ix_center_term + 1:]:
-                try:
-                    tt_dict[paragraph[ix_center_term]][window_term] += 1
-                except KeyError:
-                    tt_dict[paragraph[ix_center_term]][window_term] = 1
-    return tt_dict, dict_term_ix, dict_ix_term
-
-
-def test_ttcs():
-    corpus = np.asarray(['it technolog advanc situat',
-                         "mari don't like situat",
-                         'technolog great',
-                         'yes sir sir that question'])
-    processing = 'count'
-    result_1, result_2, result_3 = term_term_cooccurrence_scratch(corpus)
-    print(result_1, "\n", result_2, "\n", result_3, "\n")
-    info(result_1)
-    info(result_2)
-    info(result_3)
-
-
-# Perform linear regression on self-trained GloVe.
-lin_reg_trglove_X = np.asarray(np.asarray(construct_similarity_trglove)[triu_indices]).reshape(-1, 1)
-regression_y = np.asarray(construct_identity_gold_authors)[triu_indices].reshape(-1, 1)
-lin_reg_trglove = LinearRegression(fit_intercept=True, normalize=False, copy_X=True, n_jobs=1)
-lin_reg_trglove = lin_reg_trglove.fit(lin_reg_trglove_X, regression_y)
-print("Linear regression (trGloVe) coefficients:", lin_reg_trglove.coef_)
-lin_reg_trglove_r2 = lin_reg_trglove.score(lin_reg_trglove_X, regression_y)
-print("Linear regression (trGloVe) R-squared:", lin_reg_trglove_r2)
-
-# Perform linear regression on all construct similarity measures.
-similarities_flat_all = np.asarray(np.asmatrix([np.asarray(construct_similarity_lsa)[triu_indices],
-                                                np.asarray(construct_similarity_preglove)[triu_indices],
-                                                np.asarray(construct_similarity_trglove)[triu_indices],
-                                                np.asarray(construct_similarity_authors)[triu_indices],
-                                                np.asarray(construct_similarity_lsa_authors)[triu_indices]]).T)
-regression_y = np.asarray(construct_identity_gold_authors)[triu_indices]
-lin_reg_all = LinearRegression(fit_intercept=True, normalize=False, copy_X=True, n_jobs=1)
-lin_reg_all = lin_reg_all.fit(similarities_flat_all, regression_y.reshape(-1, 1))
-print("Linear regression (all) coefficients:", lin_reg_all.coef_)
-lin_reg_all_r2 = lin_reg_all.score(similarities_flat_all, regression_y.reshape(-1, 1))
-print("Linear regression (all) R-squared:", lin_reg_all_r2, "\n")
-lin_reg_all_prediction = lin_reg_all.predict(similarities_flat_all)
-fpr_linreg_all, tpr_linreg_all, roc_auc_linreg_all = evaluate(lin_reg_all_prediction,
-                                                              np.asarray(construct_identity_gold_authors)[
-                                                                  triu_indices])
-print("ROC AUC linreg all =", roc_auc_linreg_all, "\n")
-
-# Perform logistic regression on trGloVe.
-log_reg_trglove = LogisticRegression(fit_intercept=False, class_weight=None, multi_class='ovr',
-                                     solver='newton-cg').fit(np.asarray(
-    construct_similarity_trglove)[triu_indices].reshape(-1, 1), regression_y)
-print("Logistic regression (trGloVe) coefficients:", log_reg_trglove.coef_)
-log_reg_trglove_r2 = log_reg_trglove.score(np.asarray(construct_similarity_trglove)[triu_indices].reshape(-1, 1),
-                                           regression_y)
-print("Logistic regression (trGloVe) R-squared:", log_reg_trglove_r2, "\n")
-log_reg_trglove_prediction = log_reg_trglove.predict_proba(np.asarray(
-    construct_similarity_trglove)[triu_indices].reshape(-1, 1))
-fpr_log_trglove, tpr_log_trglove, roc_auc_log_trglove = evaluate(log_reg_trglove_prediction[:, 1],
-                                                                 np.asarray(construct_identity_gold_authors)[
-                                                                     triu_indices])
-print("ROC AUC logreg trGloVe =", roc_auc_log_trglove, "\n")
-
-# Perform logistic regression on all construct similarity measures.
-log_reg_all = LogisticRegression(fit_intercept=False, class_weight=None, multi_class='ovr',
-                                 solver='newton-cg').fit(similarities_flat_all, regression_y)
-print("Logistic regression (all) coefficients:", log_reg_all.coef_)
-log_reg_all_r2 = log_reg_all.score(similarities_flat_all, regression_y)
-print("Logistic regression (all) R-squared:", log_reg_all_r2, "\n")
-log_reg_all_prediction = log_reg_all.predict_proba(similarities_flat_all)
-fpr_log_all, tpr_log_all, roc_auc_log_all = evaluate(log_reg_all_prediction[:, 1],
-                                                     np.asarray(construct_identity_gold_authors)[triu_indices])
-print("ROC AUC logreg all =", roc_auc_log_all, "\n")
-
-# Take mean of similarity measures and evaluate.
-fpr_mean_all, tpr_mean_all, roc_auc_mean_all = evaluate(np.mean(similarities_flat_all, axis=1),
-                                                        np.asarray(construct_identity_gold_authors)[triu_indices])
-print("ROC AUC mean all =", roc_auc_mean_all, "\n")
-
-# Take mean of LSA, preGloVe and trGloVe and evaluate.
-similarities_flat_lsa_glove = similarities_flat_all[:, 0:3]
-fpr_mean_lsa_glove, tpr_mean_lsa_glove, roc_auc_mean_lsa_glove = evaluate(
-    np.mean(similarities_flat_lsa_glove, axis=1), np.asarray(construct_identity_gold_authors)[triu_indices])
-print("ROC AUC mean LSA GloVe =", roc_auc_mean_lsa_glove, "\n")
