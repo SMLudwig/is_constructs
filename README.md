@@ -1,8 +1,6 @@
-# is_constructs
 Bachelor Thesis
 
-Using Natural Language Processing Techniques to Tackle the Construct Identity Problem
-in Information Systems Research
+# Using Natural Language Processing Techniques to Tackle the Construct Identity Problem in Information Systems Research
 
 Siegfried Ludwig
 
@@ -10,7 +8,7 @@ B.Sc. International Business Administration & Entrepreneurship
 Leuphana University Lüneburg
 
 
-Abstract
+## Abstract
 The growing number of constructs in behavioral research presents a problem to theory
 integration, since constructs can not clearly be discriminated from each other. Recently
 there have been efforts to employ natural language processing techniques to tackle the
