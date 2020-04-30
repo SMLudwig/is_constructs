@@ -7,6 +7,7 @@ Siegfried Ludwig
 B.Sc. International Business Administration & Entrepreneurship
 Leuphana University Lüneburg
 
+The work has been published with some modifications here: https://scholarspace.manoa.hawaii.edu/handle/10125/64439
 
 ## Abstract
 The growing number of constructs in behavioral research presents a problem to theory
