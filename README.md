@@ -4,8 +4,7 @@ Bachelor Thesis
 
 Siegfried Ludwig
 
-B.Sc. International Business Administration & Entrepreneurship
-Leuphana University Lüneburg
+B.Sc. International Business Administration & Entrepreneurship, Leuphana University Lüneburg, Germany
 
 The work has been published with some modifications here: https://scholarspace.manoa.hawaii.edu/handle/10125/64439
 
